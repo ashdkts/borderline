@@ -180,8 +180,8 @@ internal static class NativeDisplay
         return false;
     }
 
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern bool EnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "EnumDisplayDevicesW")]
+    private static extern bool NativeEnumDisplayDevices(string? lpDevice, uint iDevNum, ref DISPLAY_DEVICE lpDisplayDevice, uint dwFlags);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     private struct DISPLAY_DEVICE
@@ -203,7 +203,7 @@ internal static class NativeDisplay
     private static bool EnumDisplayDevices(int index, out string deviceName, out string deviceString)
     {
         var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
-        if (!EnumDisplayDevices(null, (uint)index, ref dd, 0))
+        if (!NativeEnumDisplayDevices(null, (uint)index, ref dd, 0))
         {
             deviceName = string.Empty;
             deviceString = string.Empty;

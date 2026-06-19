@@ -26,45 +26,46 @@ jobs:
 
       - name: Determine version
         id: version
+        shell: pwsh
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-            echo "tag=v${VERSION}" >> "$GITHUB_OUTPUT"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-            VERSION="${TAG#v}"
-            echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-            echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          fi
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $version = "${{ inputs.version }}"
+          } else {
+            $tag = "$env:GITHUB_REF" -replace "refs/tags/", ""
+            $version = $tag -replace "^v", ""
+          }
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=v$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
 
       - name: Build borderline.exe
+        shell: pwsh
         run: |
           cd Borderline
-          dotnet publish \
-            -c Release \
-            -r win-x64 \
-            --self-contained true \
-            -p:PublishSingleFile=true \
-            -p:Version=${{ steps.version.outputs.version }} \
-            -p:IncludeNativeLibrariesForSelfExtract=true \
+          dotnet publish `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:Version=${{ steps.version.outputs.version }} `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
             -o ../publish
 
       - name: Create release manifest
+        shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
           REPO: ${{ github.repository }}
         run: |
-          cp publish/borderline.exe ./borderline.exe
-          SHA256="$(sha256sum borderline.exe | awk '{print $1}')"
-          URL="https://github.com/${REPO}/releases/download/v${VERSION}/borderline.exe"
-          cat > latest.json <<EOF
+          Copy-Item publish/borderline.exe ./borderline.exe
+          $sha = (Get-FileHash borderline.exe -Algorithm SHA256).Hash.ToLower()
+          $url = "https://github.com/$env:REPO/releases/download/v$env:VERSION/borderline.exe"
+          @"
           {
-            "version": "${VERSION}",
-            "url": "${URL}",
-            "sha256": "${SHA256}"
+            "version": "$env:VERSION",
+            "url": "$url",
+            "sha256": "$sha"
           }
-          EOF
+          "@ | Set-Content -Encoding utf8 latest.json
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
