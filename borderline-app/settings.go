@@ -9,22 +9,20 @@ import (
 )
 
 type Settings struct {
-	Top          int  `json:"top"`
-	Bottom       int  `json:"bottom"`
-	Left         int  `json:"left"`
-	Right        int  `json:"right"`
-	CornerRadius int  `json:"cornerRadius"`
-	Enabled      bool `json:"enabled"`
+	Top     int  `json:"top"`
+	Bottom  int  `json:"bottom"`
+	Left    int  `json:"left"`
+	Right   int  `json:"right"`
+	Enabled bool `json:"enabled"`
 }
 
 func defaultSettings() Settings {
 	return Settings{
-		Top:          0,
-		Bottom:       0,
-		Left:         0,
-		Right:        0,
-		CornerRadius: 0,
-		Enabled:      false,
+		Top:     0,
+		Bottom:  0,
+		Left:    0,
+		Right:   0,
+		Enabled: false,
 	}
 }
 

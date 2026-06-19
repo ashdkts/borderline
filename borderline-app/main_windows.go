@@ -13,7 +13,6 @@ const (
 	idBottomSlider = 1002
 	idLeftSlider   = 1003
 	idRightSlider  = 1004
-	idRadiusSlider = 1005
 	idApplyBtn     = 1010
 	idResetBtn     = 1011
 	idEnableBtn    = 1012
@@ -21,7 +20,6 @@ const (
 
 const (
 	marginMax  = 500
-	radiusMax  = 200
 	labelWidth = 120
 	sliderW    = 220
 	rowHeight  = 36
@@ -33,8 +31,8 @@ var (
 	enableBtnHandle syscall.Handle
 	current         Settings
 	controls        struct {
-		top, bottom, left, right, radius syscall.Handle
-		status                           syscall.Handle
+		top, bottom, left, right syscall.Handle
+		status                   syscall.Handle
 	}
 )
 
@@ -43,7 +41,6 @@ func main() {
 
 	instance, _, _ := procGetModuleHandle.Call(0)
 	appInstance = syscall.Handle(instance)
-	registerOverlayClass(appInstance)
 	mustRegisterMainClass(appInstance)
 
 	current = loadSettings()
@@ -74,7 +71,9 @@ func main() {
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&message)))
 	}
 
-	destroyOverlay()
+	if current.Enabled {
+		_, _ = restoreDriverMargins()
+	}
 }
 
 func mustRegisterMainClass(instance syscall.Handle) {
@@ -101,7 +100,7 @@ func createMainWindow(instance syscall.Handle) syscall.Handle {
 		cwUseDefault,
 		cwUseDefault,
 		420,
-		380,
+		340,
 		0,
 		0,
 		uintptr(instance),
@@ -122,16 +121,16 @@ func layoutControls(parent syscall.Handle) {
 	controls.left = createSliderRow(parent, "Left (px)", idLeftSlider, 16, y)
 	y += rowHeight
 	controls.right = createSliderRow(parent, "Right (px)", idRightSlider, 16, y)
-	y += rowHeight
-	controls.radius = createSliderRow(parent, "Corner radius", idRadiusSlider, 16, y)
 	y += rowHeight + 8
 
 	createButton(parent, "Apply", idApplyBtn, 16, y, 90, 28)
 	createButton(parent, "Reset", idResetBtn, 116, y, 90, 28)
-	createButton(parent, "Enable borders", idEnableBtn, 216, y, 120, 28)
+	createButton(parent, "Enable margins", idEnableBtn, 216, y, 120, 28)
 	y += 40
 
-	controls.status = createStatic(parent, "Drag sliders, then Apply. The center stays transparent and clickable.", 16, y, 380, 48)
+	controls.status = createStatic(parent,
+		"Applies a driver-level custom resolution so the GPU leaves unused panel area (blank, not an overlay).",
+		16, y, 380, 56)
 }
 
 func createStatic(parent syscall.Handle, text string, x, y, w, h int) syscall.Handle {
@@ -171,11 +170,7 @@ func createSliderRow(parent syscall.Handle, label string, id, x, y int) syscall.
 		uintptr(x+labelWidth), uintptr(y), uintptr(sliderW), uintptr(24),
 		uintptr(parent), uintptr(id), uintptr(appInstance), 0,
 	)
-	max := marginMax
-	if id == idRadiusSlider {
-		max = radiusMax
-	}
-	procSendMessage.Call(uintptr(hwnd), tbmSetrange, 1, makelong(0, uint16(max)))
+	procSendMessage.Call(uintptr(hwnd), tbmSetrange, 1, makelong(0, marginMax))
 	return syscall.Handle(hwnd)
 }
 
@@ -184,7 +179,6 @@ func syncControlsFromSettings() {
 	setSliderPos(controls.bottom, current.Bottom)
 	setSliderPos(controls.left, current.Left)
 	setSliderPos(controls.right, current.Right)
-	setSliderPos(controls.radius, current.CornerRadius)
 }
 
 func setSliderPos(hwnd syscall.Handle, value int) {
@@ -201,19 +195,34 @@ func applyFromUI() {
 	current.Bottom = clampMargin(sliderPos(controls.bottom))
 	current.Left = clampMargin(sliderPos(controls.left))
 	current.Right = clampMargin(sliderPos(controls.right))
-	current.CornerRadius = clampRadius(sliderPos(controls.radius))
 
-	applyOverlay(current)
+	var status string
+	if current.Enabled {
+		msg, err := applyDriverMargins(current)
+		if err != nil {
+			status = "Error: " + err.Error()
+		} else {
+			status = msg
+		}
+	} else {
+		msg, _ := restoreDriverMargins()
+		status = msg
+	}
+
 	_ = saveSettings(current)
-	setStatus(fmt.Sprintf("Top %d  Bottom %d  Left %d  Right %d  Radius %d  %s",
-		current.Top, current.Bottom, current.Left, current.Right, current.CornerRadius,
-		enabledLabel()))
+	setStatus(fmt.Sprintf("%s  [%s]", status, enabledLabel()))
 }
 
 func resetSettings() {
+	if current.Enabled {
+		current.Enabled = false
+		_, _ = restoreDriverMargins()
+	}
 	current = defaultSettings()
 	syncControlsFromSettings()
-	applyFromUI()
+	setStatus("Reset to defaults.")
+	_ = saveSettings(current)
+	updateEnableButtonCaption()
 }
 
 func toggleEnabled() {
@@ -233,9 +242,9 @@ func enabledLabel() string {
 }
 
 func updateEnableButtonCaption() {
-	label := "Enable borders"
+	label := "Enable margins"
 	if current.Enabled {
-		label = "Disable borders"
+		label = "Disable margins"
 	}
 	if enableBtnHandle != 0 {
 		procSetWindowText.Call(uintptr(enableBtnHandle), uintptr(unsafe.Pointer(utf16(label))))
@@ -255,19 +264,15 @@ func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) ui
 			updateEnableButtonCaption()
 		case idResetBtn:
 			resetSettings()
-			updateEnableButtonCaption()
 		case idEnableBtn:
 			toggleEnabled()
 			updateEnableButtonCaption()
 		}
 		return 0
-	case wmDisplayChange:
-		if current.Enabled {
-			applyOverlay(current)
-		}
-		return 0
 	case wmClose, wmDestroy:
-		destroyOverlay()
+		if current.Enabled {
+			_, _ = restoreDriverMargins()
+		}
 		procPostQuitMessage.Call(0)
 		return 0
 	}
@@ -279,7 +284,7 @@ func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) ui
 func onScroll(lParam uintptr) {
 	hwnd := syscall.Handle(lParam)
 	switch hwnd {
-	case controls.top, controls.bottom, controls.left, controls.right, controls.radius:
+	case controls.top, controls.bottom, controls.left, controls.right:
 		if current.Enabled {
 			applyFromUI()
 		}
@@ -288,4 +293,14 @@ func onScroll(lParam uintptr) {
 
 func loword(x uintptr) uint16 {
 	return uint16(x & 0xffff)
+}
+
+func clampMargin(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > marginMax {
+		return marginMax
+	}
+	return v
 }
