@@ -1,0 +1,5 @@
+dist/
+releases/*.exe
+.tools/
+*.exe
+.DS_Store
