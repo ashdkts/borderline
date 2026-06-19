@@ -5,6 +5,7 @@ internal enum ApplyMethod
     None,
     AmdSize,
     AmdUnderscan,
+    AmdDalRegistry,
     AmdTiming,
     Win32Custom,
 }
@@ -33,6 +34,7 @@ internal static class DisplayService
 
         if (NativeDisplay.DetectVendor() == GpuVendor.Amd)
         {
+            AmdAdlCore.PrepareForMargins();
             var errors = new List<string>();
 
             var sizeErr = AmdAdlCore.TryApplySizeAndPosition(
@@ -54,6 +56,16 @@ internal static class DisplayService
             }
 
             errors.Add($"Underscan: {underErr}");
+
+            var dalErr = AmdDalRegistry.TryApply(
+                settings.Top, settings.Bottom, settings.Left, settings.Right, out var dalMsg);
+            if (dalErr is null)
+            {
+                _lastMethod = ApplyMethod.AmdDalRegistry;
+                return dalMsg!;
+            }
+
+            errors.Add($"Registry: {dalErr}");
 
             var timingErr = AmdAdl.TryApplyMargins(
                 settings.Top, settings.Bottom, settings.Left, settings.Right, out var timingMsg);
@@ -100,6 +112,13 @@ internal static class DisplayService
                 {
                     _lastMethod = ApplyMethod.None;
                     return "AMD underscan restored.";
+                }
+                break;
+            case ApplyMethod.AmdDalRegistry:
+                if (AmdDalRegistry.Restore())
+                {
+                    _lastMethod = ApplyMethod.None;
+                    return "AMD registry underscan restored.";
                 }
                 break;
             case ApplyMethod.AmdTiming:

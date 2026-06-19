@@ -8,7 +8,7 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AssemblyName>borderline</AssemblyName>
     <RootNamespace>Borderline</RootNamespace>
-    <Version>1.1.5</Version>
+    <Version>1.1.6</Version>
     <Company>ashdkts</Company>
     <Product>Borderline</Product>
     <Description>Windows display margin / underscan tool</Description>

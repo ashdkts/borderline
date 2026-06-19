@@ -192,15 +192,71 @@ internal static class AmdAdlCore
         }
     }
 
+    private static bool _gpuScalingPrepared;
+
+    public static void PrepareForMargins()
+    {
+        if (_gpuScalingPrepared)
+        {
+            return;
+        }
+
+        try
+        {
+            EnsureLoadedDelegates();
+            _gpuScalingSet?.Invoke(Context, Target.Adapter, 1);
+            _gpuScalingPrepared = true;
+        }
+        catch
+        {
+            // GPU scaling is optional; size/underscan may still work.
+        }
+    }
+
+    public static void FlushAdapterDriver()
+    {
+        try
+        {
+            Flush(Context, Target.Adapter);
+        }
+        catch
+        {
+            // Ignore flush failures on registry-only paths.
+        }
+    }
+
     public static string? TryApplySizeAndPosition(int top, int bottom, int left, int right, out string? message)
     {
         message = null;
         try
         {
             EnsureLoaded();
-            var target = Target;
-            TryEnableGpuScaling(target.Adapter);
+            string? lastErr = null;
+            foreach (var candidate in EnumerateTargets())
+            {
+                lastErr = TryApplySizeOnTarget(candidate, top, bottom, left, right, out message);
+                if (lastErr is null)
+                {
+                    _target = candidate;
+                    return null;
+                }
+            }
 
+            return lastErr ?? "no AMD displays found";
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private static string? TryApplySizeOnTarget(
+        TargetDisplay target, int top, int bottom, int left, int right, out string? message)
+    {
+        message = null;
+        try
+        {
+            EnsureLoaded();
             var sizeGet = GetDelegate<Adl2DisplaySizeGet>("ADL2_Display_Size_Get");
             var sizeSet = GetDelegate<Adl2DisplaySizeSet>("ADL2_Display_Size_Set");
             var posGet = GetDelegate<Adl2DisplayPositionGet>("ADL2_Display_Position_Get");
@@ -285,6 +341,12 @@ internal static class AmdAdlCore
             var newWidth = ScaleSetting(defaultWidth, minWidth, maxWidth, stepWidth, widthScale);
             var newHeight = ScaleSetting(defaultHeight, minHeight, maxHeight, stepHeight, heightScale);
 
+            if (newWidth == width && newHeight == height)
+            {
+                return
+                    $"size range too narrow (cur {width}x{height}, min {minWidth}x{minHeight} max {maxWidth}x{maxHeight}, default {defaultWidth}x{defaultHeight})";
+            }
+
             coherentSet?.Invoke(Context, target.Adapter, target.Display, 0);
 
             if (sizeSet(Context, target.Adapter, target.Display, newWidth, newHeight) != AdlOk)
@@ -304,10 +366,32 @@ internal static class AmdAdlCore
             }
 
             Flush(Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
+
+            var verifyW = 0;
+            var verifyH = 0;
+            var verifyDefW = 0;
+            var verifyDefH = 0;
+            var verifyMinW = 0;
+            var verifyMinH = 0;
+            var verifyMaxW = 0;
+            var verifyMaxH = 0;
+            var verifyStepW = 0;
+            var verifyStepH = 0;
+            sizeGet(
+                Context, target.Adapter, target.Display,
+                ref verifyW, ref verifyH, ref verifyDefW, ref verifyDefH,
+                ref verifyMinW, ref verifyMinH, ref verifyMaxW, ref verifyMaxH,
+                ref verifyStepW, ref verifyStepH);
+
+            if (verifyW == width && verifyH == height)
+            {
+                sizeSet(Context, target.Adapter, target.Display, width, height);
+                return
+                    $"driver ignored size change (still {width}x{height}, wanted {newWidth}x{newHeight}, caps 0x{caps:X})";
+            }
 
             message =
-                $"AMD display size {newWidth}x{newHeight} (adapter {target.Adapter}, display {target.Display}, caps 0x{caps:X}).";
+                $"AMD display size {width}x{height} -> {verifyW}x{verifyH} (adapter {target.Adapter}, display {target.Display}, caps 0x{caps:X}).";
             return null;
         }
         catch (Exception ex)
@@ -322,9 +406,31 @@ internal static class AmdAdlCore
         try
         {
             EnsureLoaded();
-            var target = Target;
-            TryEnableGpuScaling(target.Adapter);
+            string? lastErr = null;
+            foreach (var candidate in EnumerateTargets())
+            {
+                lastErr = TryApplyUnderscanOnTarget(candidate, top, bottom, left, right, out message);
+                if (lastErr is null)
+                {
+                    _target = candidate;
+                    return null;
+                }
+            }
 
+            return lastErr ?? "no AMD displays found";
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    private static string? TryApplyUnderscanOnTarget(
+        TargetDisplay target, int top, int bottom, int left, int right, out string? message)
+    {
+        message = null;
+        try
+        {
             var supportGet = GetDelegate<Adl2DisplayUnderscanSupportGet>("ADL2_Display_UnderscanSupport_Get");
             var stateSet = GetDelegate<Adl2DisplayUnderscanStateSet>("ADL2_Display_UnderscanState_Set");
             var underGet = GetDelegate<Adl2DisplayUnderscanGet>("ADL2_Display_Underscan_Get");
@@ -362,6 +468,11 @@ internal static class AmdAdlCore
             var targetValue = dim <= 0 ? min : margin * 100 * 2 / dim;
             targetValue = Snap(targetValue, min, max, step);
 
+            if (targetValue == current && margin > 0)
+            {
+                return $"underscan already at {current}% (range {min}-{max}, step {step})";
+            }
+
             if (stateSet(Context, target.Adapter, target.Display, 1) != AdlOk)
             {
                 return "could not enable underscan";
@@ -374,10 +485,21 @@ internal static class AmdAdlCore
             }
 
             Flush(Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
+
+            var verify = 0;
+            var verifyDef = 0;
+            var verifyMin = 0;
+            var verifyMax = 0;
+            var verifyStep = 0;
+            underGet(Context, target.Adapter, target.Display, ref verify, ref verifyDef, ref verifyMin, ref verifyMax, ref verifyStep);
+            if (verify == current)
+            {
+                underSet(Context, target.Adapter, target.Display, current);
+                return $"driver ignored underscan (still {current}%, wanted {targetValue}%, range {min}-{max})";
+            }
 
             message =
-                $"AMD underscan {targetValue}% (adapter {target.Adapter}, display {target.Display}, range {min}-{max}).";
+                $"AMD underscan {current}% -> {verify}% (adapter {target.Adapter}, display {target.Display}, range {min}-{max}).";
             return null;
         }
         catch (Exception ex)
@@ -402,7 +524,6 @@ internal static class AmdAdlCore
             sizeSet(Context, target.Adapter, target.Display, _backupSizeW, _backupSizeH);
             posSet?.Invoke(Context, target.Adapter, target.Display, _backupPosX, _backupPosY);
             Flush(Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
             _hasSizeBackup = false;
             return true;
         }
@@ -428,7 +549,6 @@ internal static class AmdAdlCore
             underSet(Context, target.Adapter, target.Display, _backupUnderscan);
             stateSet(Context, target.Adapter, target.Display, 0);
             Flush(Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
             _hasUnderscanBackup = false;
             return true;
         }
@@ -508,9 +628,94 @@ internal static class AmdAdlCore
         return (_flush, _gpuScalingSet);
     }
 
-    private static void TryEnableGpuScaling(int adapter)
+    private static IEnumerable<TargetDisplay> EnumerateTargets()
     {
-        _gpuScalingSet?.Invoke(Context, adapter, 1);
+        EnsureLoaded();
+
+        var numAdaptersGet = GetDelegate<Adl2AdapterNumberOfAdaptersGet>("ADL2_Adapter_NumberOfAdapters_Get");
+        var adapterInfoGet = GetDelegate<Adl2AdapterAdapterInfoGet>("ADL2_Adapter_AdapterInfo_Get");
+        var displayInfoGet = GetDelegate<Adl2DisplayDisplayInfoGet>("ADL2_Display_DisplayInfo_Get");
+        var primaryDevice = NativeDisplay.GetPrimaryDeviceName();
+
+        var numAdapters = 0;
+        if (numAdaptersGet(Context, ref numAdapters) != AdlOk || numAdapters <= 0)
+        {
+            yield break;
+        }
+
+        var infoSize = Marshal.SizeOf<AdapterInfo>();
+        var adapterBuffer = Marshal.AllocHGlobal(infoSize * numAdapters);
+        try
+        {
+            for (var i = 0; i < numAdapters; i++)
+            {
+                Marshal.WriteInt32(adapterBuffer + (i * infoSize), infoSize);
+            }
+
+            if (adapterInfoGet(Context, adapterBuffer, infoSize * numAdapters) != AdlOk)
+            {
+                yield break;
+            }
+
+            var primaryMatches = new List<TargetDisplay>();
+            var others = new List<TargetDisplay>();
+
+            for (var i = 0; i < numAdapters; i++)
+            {
+                var adapter = Marshal.PtrToStructure<AdapterInfo>(adapterBuffer + (i * infoSize));
+                if (adapter.iPresent == 0)
+                {
+                    continue;
+                }
+
+                var numDisplays = 0;
+                IntPtr displayList = IntPtr.Zero;
+                if (displayInfoGet(Context, adapter.iAdapterIndex, ref numDisplays, ref displayList, 1) != AdlOk ||
+                    numDisplays <= 0 || displayList == IntPtr.Zero)
+                {
+                    continue;
+                }
+
+                var displaySize = Marshal.SizeOf<AdlDisplayInfo>();
+                for (var d = 0; d < numDisplays; d++)
+                {
+                    var info = Marshal.PtrToStructure<AdlDisplayInfo>(displayList + (d * displaySize));
+                    if (info.displayID.iDisplayLogicalAdapterIndex != adapter.iAdapterIndex)
+                    {
+                        continue;
+                    }
+
+                    var candidate = new TargetDisplay(
+                        adapter.iAdapterIndex,
+                        info.displayID.iDisplayLogicalIndex,
+                        adapter.strDisplayName);
+
+                    if (!string.IsNullOrEmpty(primaryDevice) &&
+                        string.Equals(adapter.strDisplayName, primaryDevice, StringComparison.OrdinalIgnoreCase))
+                    {
+                        primaryMatches.Add(candidate);
+                    }
+                    else
+                    {
+                        others.Add(candidate);
+                    }
+                }
+            }
+
+            foreach (var t in primaryMatches)
+            {
+                yield return t;
+            }
+
+            foreach (var t in others)
+            {
+                yield return t;
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(adapterBuffer);
+        }
     }
 
     private static TargetDisplay FindTargetDisplay()

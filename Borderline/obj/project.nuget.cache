@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "uCBw8ltAiu4=",
+  "success": true,
+  "projectFilePath": "/Users/ashdakota/borderline/Borderline/Borderline.csproj",
+  "expectedPackageFiles": [
+    "/Users/ashdakota/.nuget/packages/microsoft.windowsdesktop.app.ref/8.0.28/microsoft.windowsdesktop.app.ref.8.0.28.nupkg.sha512"
+  ],
+  "logs": []
+}

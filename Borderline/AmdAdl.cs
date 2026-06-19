@@ -74,7 +74,6 @@ internal static class AmdAdl
         {
             _ = AmdAdlCore.Context;
             var target = AmdAdlCore.Target;
-            TryEnableGpuScaling(target.Adapter);
 
             _getOverride ??= AmdAdlCore.GetDelegate<Adl2DisplayModeTimingOverrideGet>("ADL2_Display_ModeTimingOverride_Get");
             _setOverride ??= AmdAdlCore.GetDelegate<Adl2DisplayModeTimingOverrideSet>("ADL2_Display_ModeTimingOverride_Set");
@@ -139,7 +138,6 @@ internal static class AmdAdl
             }
 
             AmdAdlCore.Flush(AmdAdlCore.Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
 
             message =
                 $"AMD timing overscan {left}/{right}/{top}/{bottom}px on {w}x{h} (adapter {target.Adapter}, display {target.Display}).";
@@ -166,7 +164,6 @@ internal static class AmdAdl
             restore.iTimingStandard = AdlDlModetimingStandardDriverDefault;
             _setOverride(AmdAdlCore.Context, target.Adapter, target.Display, ref restore, 1);
             AmdAdlCore.Flush(AmdAdlCore.Context, target.Adapter);
-            NativeDisplay.RefreshDisplay();
             _hasBackup = false;
             return true;
         }
@@ -175,15 +172,6 @@ internal static class AmdAdl
             return false;
         }
     }
-
-    private static void TryEnableGpuScaling(int adapter)
-    {
-        var gpuScaling = AmdAdlCore.TryGetDelegate<Adl2DfpGpuScalingEnableSet>("ADL2_DFP_GPUScalingEnable_Set");
-        gpuScaling?.Invoke(AmdAdlCore.Context, adapter, 1);
-    }
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int enabled);
 
     private static bool HasValidTiming(AdlDetailedTiming dt) =>
         dt.sHTotal > 0 && dt.sVTotal > 0 && dt.sPixelClock > 0;
