@@ -1,48 +1,43 @@
 # Borderline
 
-Borderline adjusts **display underscan/overscan at the driver level** on Windows. Unused panel area stays blank — Borderline does not draw overlay bars.
+Borderline adjusts **display underscan/overscan at the driver level** on Windows. Unused panel area stays blank — no overlay bars.
 
 **Download:** https://github.com/ashdkts/borderline/releases/latest/download/borderline.exe
 
-## v1.0.3 changes
+## v1.1.0 — rewritten in C# / WinForms
 
-- **Fixes startup hang** — removed trackbar controls (they blocked without a manifest); margins use number fields instead
-- **Window shows immediately** — UI builds inside `WM_CREATE`; no driver work until you click Apply
-- **Pinned Win32 callbacks** — prevents Go GC from breaking the window procedure
+Earlier Go builds could hang or crash on startup due to low-level Win32 issues. **v1.1.0 is a full rewrite** using .NET WinForms — a standard Windows UI stack that should open reliably.
 
-## Using Borderline
+### Features
 
-1. Launch **Borderline** (shows detected GPU at the top).
-2. Set **Top / Bottom / Left / Right** margins in pixels.
+- Pixel margin fields (Top / Bottom / Left / Right)
+- **AMD** — native ADL driver underscan
+- **NVIDIA / Intel / other** — custom resolution via Windows display API
+- **Auto-update** — checks GitHub Releases ~5 seconds after launch
+- Settings saved to `%APPDATA%\Borderline\settings.json`
+
+### Usage
+
+1. Download and run `borderline.exe` (self-contained, no .NET install required).
+2. Enter margins in pixels.
 3. Click **Apply** or **Enable margins**.
-4. Click **Disable margins** or **Reset** to restore your previous mode.
+4. Click **Disable margins** or **Reset** to restore.
 
-Settings persist in `%APPDATA%\Borderline\settings.json`.
+### AMD note
 
-## GPU support
+AMD’s driver API applies **uniform** underscan. If edges differ, Borderline uses the **largest** margin value.
 
-| GPU | Method |
-|-----|--------|
-| **AMD** | ADL driver underscan (native). Per-edge sliders use the **largest** margin as uniform underscan — AMD’s driver API does not expose independent edge values. |
-| **NVIDIA** | Custom resolution via Windows display API (+ unsafe modes for custom timings) |
-| **Intel / other** | Custom resolution via Windows display API |
-
-If edges look stretched, set GPU scaling to **center / 1:1** in your graphics control panel.
-
-## Auto-update
-
-On launch, Borderline checks:
-
-`https://github.com/ashdkts/borderline/releases/latest/download/latest.json`
-
-If a newer version exists, it downloads the exe (SHA-256 verified), replaces itself, and restarts. Status appears in the window footer.
-
-## Publish a release
+### Build (requires .NET 8 SDK)
 
 ```bash
-./scripts/build.sh 1.0.2
-git tag v1.0.2
-git push origin main --tags
+./scripts/build.sh 1.1.0
+```
+
+### Publish release
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
 ```
 
 ## License

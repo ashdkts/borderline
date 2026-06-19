@@ -1,5 +1,7 @@
 dist/
 releases/*.exe
+publish/
 .tools/
 *.exe
 .DS_Store
+borderline-app/

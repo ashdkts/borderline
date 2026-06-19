@@ -2,50 +2,51 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-# Prefer a local .tools/go, then fall back to littlescreens' bundled Go.
-if [[ -x "${ROOT}/.tools/go/bin/go" ]]; then
-  export PATH="${ROOT}/.tools/go/bin:${PATH}"
-elif [[ -x "${ROOT}/../littlescreens/.tools/go/bin/go" ]]; then
-  export PATH="${ROOT}/../littlescreens/.tools/go/bin:${PATH}"
-fi
-
+VERSION="${1:-1.1.0}"
 DIST="${ROOT}/dist"
 RELEASES="${ROOT}/releases"
 
 mkdir -p "${DIST}" "${RELEASES}"
 
-VERSION="${1:-1.0.3}"
-LDFLAGS="-s -w -H windowsgui -X main.appVersion=${VERSION} -X main.releaseRepo=ashdkts/borderline"
+if ! command -v dotnet >/dev/null 2>&1; then
+  echo "dotnet SDK not found. Install .NET 8 SDK or rely on GitHub Actions to build." >&2
+  exit 1
+fi
 
-echo "Building borderline.exe for Windows (v${VERSION})..."
+echo "Building borderline.exe v${VERSION} (C# WinForms)..."
 (
-  cd "${ROOT}/borderline-app"
-  GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-    go build -ldflags="${LDFLAGS}" -o "${DIST}/borderline.exe" .
+  cd "${ROOT}/Borderline"
+  dotnet publish \
+    -c Release \
+    -r win-x64 \
+    --self-contained true \
+    -p:PublishSingleFile=true \
+    -p:Version="${VERSION}" \
+    -p:IncludeNativeLibrariesForSelfExtract=true \
+    -o "${DIST}/publish"
 )
+
+cp "${DIST}/publish/borderline.exe" "${DIST}/borderline.exe"
+cp "${DIST}/borderline.exe" "${RELEASES}/borderline.exe"
 
 if command -v shasum >/dev/null 2>&1; then
   SHA256="$(shasum -a 256 "${DIST}/borderline.exe" | awk '{print $1}')"
 elif command -v sha256sum >/dev/null 2>&1; then
   SHA256="$(sha256sum "${DIST}/borderline.exe" | awk '{print $1}')"
 else
-  echo "Could not compute sha256; install shasum or sha256sum." >&2
+  echo "Could not compute sha256." >&2
   exit 1
 fi
 
 cat > "${RELEASES}/latest.json" <<EOF
 {
-  "version": "1.0.3",
-  "url": "http://127.0.0.1:8080/borderline.exe",
+  "version": "${VERSION}",
+  "url": "https://github.com/ashdkts/borderline/releases/download/v${VERSION}/borderline.exe",
   "sha256": "${SHA256}"
 }
 EOF
-
-cp "${DIST}/borderline.exe" "${RELEASES}/borderline.exe"
 
 echo
 echo "Build complete:"
 echo "  ${DIST}/borderline.exe"
 echo "  ${RELEASES}/borderline.exe"
-echo "  ${RELEASES}/latest.json"
