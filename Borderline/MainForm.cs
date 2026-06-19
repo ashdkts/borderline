@@ -2,20 +2,19 @@ namespace Borderline;
 
 internal sealed class MainForm : Form
 {
-    private readonly Label _gpuLabel = new() { AutoSize = true, MaximumSize = new Size(420, 0) };
-    private readonly Label _statusLabel = new()
-    {
-        AutoSize = true,
-        MaximumSize = new Size(420, 0),
-        UseMnemonic = false,
-    };
-    private readonly NumericUpDown _top = CreateMarginInput();
-    private readonly NumericUpDown _bottom = CreateMarginInput();
-    private readonly NumericUpDown _left = CreateMarginInput();
-    private readonly NumericUpDown _right = CreateMarginInput();
-    private readonly Button _applyBtn = new() { Text = "Apply", Width = 96, Height = 32 };
-    private readonly Button _resetBtn = new() { Text = "Reset", Width = 96, Height = 32 };
-    private readonly Button _enableBtn = new() { Text = "Enable margins", Width = 130, Height = 32 };
+    private readonly Label _gpuLabel = new() { Left = 16, Top = 12, Width = 460, Height = 22, AutoEllipsis = true };
+    private readonly Label _lblTop = new() { Text = "Top (px)", Left = 16, Top = 48, Width = 100, Height = 24 };
+    private readonly Label _lblBottom = new() { Text = "Bottom (px)", Left = 16, Top = 84, Width = 100, Height = 24 };
+    private readonly Label _lblLeft = new() { Text = "Left (px)", Left = 16, Top = 120, Width = 100, Height = 24 };
+    private readonly Label _lblRight = new() { Text = "Right (px)", Left = 16, Top = 156, Width = 100, Height = 24 };
+    private readonly NumericUpDown _top = CreateInput(130, 44);
+    private readonly NumericUpDown _bottom = CreateInput(130, 80);
+    private readonly NumericUpDown _left = CreateInput(130, 116);
+    private readonly NumericUpDown _right = CreateInput(130, 152);
+    private readonly Button _applyBtn = new() { Text = "Apply", Left = 16, Top = 200, Width = 100, Height = 34 };
+    private readonly Button _resetBtn = new() { Text = "Reset", Left = 126, Top = 200, Width = 100, Height = 34 };
+    private readonly Button _enableBtn = new() { Text = "Enable margins", Left = 236, Top = 200, Width = 130, Height = 34 };
+    private readonly Label _statusLabel = new() { Left = 16, Top = 250, Width = 460, Height = 80 };
 
     private AppSettings _settings = AppSettings.Load();
     private bool _busy;
@@ -24,44 +23,17 @@ internal sealed class MainForm : Form
     {
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "?";
         Text = $"Borderline v{version}";
-        AutoScaleMode = AutoScaleMode.Font;
-        Font = new Font("Segoe UI", 9.75f);
-        MinimumSize = new Size(480, 360);
-        ClientSize = new Size(480, 360);
-        FormBorderStyle = FormBorderStyle.FixedSingle;
+        Font = new Font("Segoe UI", 10f);
+        ClientSize = new Size(500, 350);
+        FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
-        Padding = new Padding(16);
 
-        var layout = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-        };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-
-        AddRow(layout, 0, _gpuLabel, columnSpan: 2);
-        AddRow(layout, 1, new Label { Text = "Top (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _top);
-        AddRow(layout, 2, new Label { Text = "Bottom (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _bottom);
-        AddRow(layout, 3, new Label { Text = "Left (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _left);
-        AddRow(layout, 4, new Label { Text = "Right (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _right);
-
-        var buttons = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.LeftToRight,
-            AutoSize = true,
-            WrapContents = false,
-            Margin = new Padding(0, 8, 0, 8),
-        };
-        buttons.Controls.AddRange([_applyBtn, _resetBtn, _enableBtn]);
-        AddRow(layout, 5, buttons, columnSpan: 2);
-
-        AddRow(layout, 6, _statusLabel, columnSpan: 2);
-
-        Controls.Add(layout);
+        Controls.AddRange([
+            _gpuLabel, _lblTop, _lblBottom, _lblLeft, _lblRight,
+            _top, _bottom, _left, _right,
+            _applyBtn, _resetBtn, _enableBtn, _statusLabel,
+        ]);
 
         _applyBtn.Click += (_, _) => { _settings.Enabled = true; _ = ApplyAsync(); };
         _resetBtn.Click += (_, _) => ResetUi();
@@ -69,43 +41,20 @@ internal sealed class MainForm : Form
 
         LoadSettingsToUi();
         UpdateEnableCaption();
-        _statusLabel.Text = _settings.Enabled
-            ? "Saved margins loaded. Click Apply to re-enable."
-            : "Enter pixel margins, then click Apply.";
+        _statusLabel.Text = "Enter pixel margins, then click Apply.";
 
         Shown += OnShown;
         FormClosing += (_, _) =>
         {
             if (_settings.Enabled && !_busy)
             {
-                try
-                {
-                    DisplayService.Restore();
-                }
-                catch
-                {
-                    // Best effort on exit.
-                }
+                try { DisplayService.Restore(); } catch { }
             }
         };
     }
 
-    private static void AddRow(TableLayoutPanel layout, int row, Control a, Control? b = null, int columnSpan = 1)
-    {
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(a, 0, row);
-        if (columnSpan > 1)
-        {
-            layout.SetColumnSpan(a, columnSpan);
-        }
-        else if (b is not null)
-        {
-            layout.Controls.Add(b, 1, row);
-        }
-    }
-
-    private static NumericUpDown CreateMarginInput() =>
-        new() { Minimum = 0, Maximum = 500, Width = 110, Height = 28 };
+    private static NumericUpDown CreateInput(int x, int y) =>
+        new() { Left = x, Top = y, Width = 110, Height = 28, Minimum = 0, Maximum = 500 };
 
     private void LoadSettingsToUi()
     {
@@ -115,27 +64,21 @@ internal sealed class MainForm : Form
         _right.Value = Clamp(_settings.Right);
     }
 
-    private AppSettings ReadFromUi() =>
-        new()
-        {
-            Top = (int)_top.Value,
-            Bottom = (int)_bottom.Value,
-            Left = (int)_left.Value,
-            Right = (int)_right.Value,
-            Enabled = _settings.Enabled,
-        };
+    private AppSettings ReadFromUi() => new()
+    {
+        Top = (int)_top.Value,
+        Bottom = (int)_bottom.Value,
+        Left = (int)_left.Value,
+        Right = (int)_right.Value,
+        Enabled = _settings.Enabled,
+    };
 
     private async Task ApplyAsync()
     {
-        if (_busy)
-        {
-            return;
-        }
-
+        if (_busy) return;
         _busy = true;
         SetUiEnabled(false);
         SetStatus("Applying driver settings…");
-
         _settings = ReadFromUi();
 
         try
@@ -158,12 +101,7 @@ internal sealed class MainForm : Form
 
     private void ResetUi()
     {
-        if (_settings.Enabled)
-        {
-            _settings.Enabled = false;
-            _ = ApplyAsync();
-        }
-
+        if (_settings.Enabled) { _settings.Enabled = false; _ = ApplyAsync(); }
         _settings = AppSettings.Default;
         LoadSettingsToUi();
         _settings.Save();
@@ -176,27 +114,16 @@ internal sealed class MainForm : Form
 
     private void SetUiEnabled(bool enabled)
     {
-        _top.Enabled = enabled;
-        _bottom.Enabled = enabled;
-        _left.Enabled = enabled;
-        _right.Enabled = enabled;
-        _applyBtn.Enabled = enabled;
-        _resetBtn.Enabled = enabled;
-        _enableBtn.Enabled = enabled;
+        _top.Enabled = _bottom.Enabled = _left.Enabled = _right.Enabled = enabled;
+        _applyBtn.Enabled = _resetBtn.Enabled = _enableBtn.Enabled = enabled;
     }
 
     private void SetStatus(string text) => _statusLabel.Text = text;
 
     private async void OnShown(object? sender, EventArgs e)
     {
-        try
-        {
-            _gpuLabel.Text = await Task.Run(DisplayService.GpuLabel).ConfigureAwait(true);
-        }
-        catch (Exception ex)
-        {
-            _gpuLabel.Text = "GPU: unknown (" + ex.Message + ")";
-        }
+        try { _gpuLabel.Text = await Task.Run(DisplayService.GpuLabel).ConfigureAwait(true); }
+        catch (Exception ex) { _gpuLabel.Text = "GPU: unknown (" + ex.Message + ")"; }
 
         _ = Task.Run(async () =>
         {
@@ -206,12 +133,9 @@ internal sealed class MainForm : Form
                 var progress = new Progress<string>(msg => BeginInvoke(() => SetStatus(msg)));
                 await UpdateService.CheckAndInstallAsync(progress, CancellationToken.None).ConfigureAwait(false);
             }
-            catch
-            {
-                // Updates are optional.
-            }
+            catch { }
         });
     }
 
-    private static decimal Clamp(int value) => Math.Clamp(value, 0, 500);
+    private static decimal Clamp(int v) => Math.Clamp(v, 0, 500);
 }

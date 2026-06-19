@@ -3,7 +3,8 @@ namespace Borderline;
 internal enum ApplyMethod
 {
     None,
-    AmdAdl,
+    AmdTiming,
+    AmdUnderscan,
     Win32Custom,
 }
 
@@ -15,7 +16,7 @@ internal static class DisplayService
     {
         return NativeDisplay.DetectVendor() switch
         {
-            GpuVendor.Amd => "GPU: AMD (ADL if available, else custom resolution)",
+            GpuVendor.Amd => "GPU: AMD Radeon (ADL timing override)",
             GpuVendor.Nvidia => "GPU: NVIDIA (custom resolution)",
             GpuVendor.Intel => "GPU: Intel (custom resolution)",
             _ => "GPU: generic (custom resolution)",
@@ -31,18 +32,32 @@ internal static class DisplayService
 
         if (NativeDisplay.DetectVendor() == GpuVendor.Amd)
         {
-            var amdError = AmdDisplay.TryApply(settings.Top, settings.Bottom, settings.Left, settings.Right, out var amdMsg);
-            if (amdError is null)
+            var err = AmdAdl.TryApplyMargins(settings.Top, settings.Bottom, settings.Left, settings.Right, out var msg);
+            if (err is null)
             {
-                _lastMethod = ApplyMethod.AmdAdl;
-                return amdMsg!;
+                _lastMethod = ApplyMethod.AmdTiming;
+                return msg!;
             }
 
-            var customMsg = NativeDisplay.ApplyCustomMode(
-                settings.Top, settings.Bottom, settings.Left, settings.Right,
-                enableUnsafeModes: true);
-            _lastMethod = ApplyMethod.Win32Custom;
-            return $"{customMsg} (ADL underscan unavailable: {amdError})";
+            var underErr = AmdDisplay.TryApply(settings.Top, settings.Bottom, settings.Left, settings.Right, out var underMsg);
+            if (underErr is null)
+            {
+                _lastMethod = ApplyMethod.AmdUnderscan;
+                return underMsg!;
+            }
+
+            try
+            {
+                var custom = NativeDisplay.ApplyCustomMode(
+                    settings.Top, settings.Bottom, settings.Left, settings.Right, enableUnsafeModes: true);
+                _lastMethod = ApplyMethod.Win32Custom;
+                return custom;
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"All AMD methods failed. Timing: {err}. Underscan: {underErr}. Windows: {ex.Message}", ex);
+            }
         }
 
         var nvidia = NativeDisplay.DetectVendor() == GpuVendor.Nvidia;
@@ -54,7 +69,14 @@ internal static class DisplayService
     {
         switch (_lastMethod)
         {
-            case ApplyMethod.AmdAdl:
+            case ApplyMethod.AmdTiming:
+                if (AmdAdl.Restore())
+                {
+                    _lastMethod = ApplyMethod.None;
+                    return "AMD timing override restored.";
+                }
+                break;
+            case ApplyMethod.AmdUnderscan:
                 if (AmdDisplay.Restore())
                 {
                     _lastMethod = ApplyMethod.None;

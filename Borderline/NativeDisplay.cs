@@ -277,6 +277,28 @@ internal static class NativeDisplay
         height = mode.dmPelsHeight;
         return true;
     }
+
+    public static bool TryGetRefreshRate(out int hz)
+    {
+        hz = 60;
+        if (!TryGetCurrentMode(out var mode, out _))
+        {
+            return false;
+        }
+
+        hz = mode.dmDisplayFrequency > 0 ? mode.dmDisplayFrequency : 60;
+        return true;
+    }
+
+    public static void RefreshDisplay()
+    {
+        if (!TryGetCurrentMode(out var mode, out var device))
+        {
+            return;
+        }
+
+        TestOrApply(device, ref mode, testOnly: false);
+    }
 }
 
 internal enum GpuVendor
