@@ -81,7 +81,7 @@ internal static class AmdAdlCore
     private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int enabled);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2FlushDriverData(IntPtr context, int adapter);
+    internal delegate int Adl2FlushDriverData(IntPtr context, int adapter);
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
     internal struct AdapterInfo
