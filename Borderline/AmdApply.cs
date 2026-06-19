@@ -3,6 +3,7 @@ namespace Borderline;
 internal enum ApplyMethod
 {
     None,
+    AmdGpuScaling,
     AmdViewPort,
     AmdUnderscan,
     AmdOverscan,
@@ -21,7 +22,20 @@ internal static class AmdApply
         AmdAdlCore.PrepareForMargins();
         log.Add(AmdAdlCore.GetCapabilitySummary());
 
-        var (ok, msg) = Try("viewport", () =>
+        var (ok, msg) = Try("gpu-scaling", () =>
+        {
+            var err = AmdGpuScaling.TryApply(
+                settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
+            return err is null ? (true, m!) : (false, err);
+        }, log);
+        if (ok)
+        {
+            method = ApplyMethod.AmdGpuScaling;
+            ApplyLog.Write(log);
+            return msg;
+        }
+
+        (ok, msg) = Try("viewport", () =>
         {
             var err = AmdAdlCore.TryApplyViewPort(settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
             return err is null ? (true, m!) : (false, err);
@@ -101,6 +115,7 @@ internal static class AmdApply
 
     public static bool Restore(ApplyMethod method) => method switch
     {
+        ApplyMethod.AmdGpuScaling => AmdGpuScaling.Restore(),
         ApplyMethod.AmdViewPort => AmdAdlCore.RestoreViewPort(),
         ApplyMethod.AmdUnderscan => AmdAdlCore.RestoreUnderscan(),
         ApplyMethod.AmdOverscan => AmdAdlCore.RestoreOverscan(),
@@ -127,9 +142,13 @@ internal static class AmdApply
     }
 
     private static string BuildFailureMessage() =>
-        "This Radeon iGPU does not accept driver-level margins on your current display output.\r\n\r\n" +
-        "Try in AMD Software → Gaming → Display: turn GPU Scaling ON, set Scaling Mode to Centered, then retry.\r\n\r\n" +
-        $"Full diagnostic log: {ApplyLog.LastPath}";
+        "Your Radeon iGPU rejected every margin path Borderline tried (viewport, underscan, GPU scaling + custom resolution, registry, timing).\r\n\r\n" +
+        "This hardware/driver combo may not expose per-edge blanking. What often works on SER-class iGPUs:\r\n" +
+        "1. AMD Software → Gaming → Display → GPU Scaling ON, Scaling Mode Centered\r\n" +
+        "2. Windows Settings → Display → set a lower resolution (e.g. 1840×1000 on 1920×1080)\r\n" +
+        "   — centered scaling leaves blank bars at the native panel size\r\n" +
+        "3. Use equal margins on all sides in Borderline (asymmetric per-edge may not be supported)\r\n\r\n" +
+        $"Send this file if you want help: {ApplyLog.LastPath}";
 }
 
 internal static class ApplyLog

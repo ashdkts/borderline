@@ -84,8 +84,14 @@ internal static class NativeDisplay
     private static DEVMODE? _backup;
     private static string? _deviceName;
 
-    public static string ApplyCustomMode(int top, int bottom, int left, int right, bool enableUnsafeModes)
+    public static string ApplyExactMode(
+        int top, int bottom, int left, int right,
+        bool enableUnsafeModes,
+        out int appliedW,
+        out int appliedH)
     {
+        appliedW = 0;
+        appliedH = 0;
         if (!TryGetCurrentMode(out var current, out var device))
         {
             throw new InvalidOperationException("Could not read current display mode.");
@@ -105,6 +111,38 @@ internal static class NativeDisplay
                 $"Margins too large for {current.dmPelsWidth}x{current.dmPelsHeight}.");
         }
 
+        ApplyModeInternal(device, current, newW, newH, enableUnsafeModes, out appliedW, out appliedH);
+        return $"Custom mode {appliedW}x{appliedH} @ {current.dmDisplayFrequency}Hz (was {current.dmPelsWidth}x{current.dmPelsHeight}).";
+    }
+
+    public static string ApplyCustomMode(int top, int bottom, int left, int right, bool enableUnsafeModes)
+    {
+        try
+        {
+            return ApplyExactMode(top, bottom, left, right, enableUnsafeModes, out _, out _);
+        }
+        catch (InvalidOperationException) when (top != bottom || left != right)
+        {
+            if (!TryGetCurrentMode(out var current, out var device))
+            {
+                throw;
+            }
+
+            var uniform = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
+            var newW = current.dmPelsWidth - uniform * 2;
+            var newH = current.dmPelsHeight - uniform * 2;
+            ApplyModeInternal(device, current, newW, newH, enableUnsafeModes, out var aw, out var ah);
+            return $"Custom mode {aw}x{ah} (uniform {uniform}px margins; asymmetric rejected by driver).";
+        }
+    }
+
+    private static void ApplyModeInternal(
+        string device, DEVMODE current, int newW, int newH, bool enableUnsafeModes,
+        out int appliedW, out int appliedH)
+    {
+        appliedW = newW;
+        appliedH = newH;
+
         if (enableUnsafeModes)
         {
             ChangeDisplaySettingsEx(NormalizeDevice(device), IntPtr.Zero, IntPtr.Zero,
@@ -116,24 +154,11 @@ internal static class NativeDisplay
         mode.dmPelsWidth = newW;
         mode.dmPelsHeight = newH;
 
-        try
+        TestOrApply(device, ref mode, testOnly: true);
+        var code = TestOrApply(device, ref mode, testOnly: false);
+        if (code == DISP_CHANGE_RESTART)
         {
-            TestOrApply(device, ref mode, testOnly: true);
-            var code = TestOrApply(device, ref mode, testOnly: false);
-            var restart = code == DISP_CHANGE_RESTART ? " Restart may be required." : "";
-            return $"Custom mode {newW}x{newH} @ {mode.dmDisplayFrequency}Hz (was {current.dmPelsWidth}x{current.dmPelsHeight}).{restart}";
-        }
-        catch (InvalidOperationException) when (top != bottom || left != right)
-        {
-            var uniform = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
-            mode = current;
-            mode.dmFields = current.dmFields | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
-            mode.dmPelsWidth = current.dmPelsWidth - uniform * 2;
-            mode.dmPelsHeight = current.dmPelsHeight - uniform * 2;
-            TestOrApply(device, ref mode, testOnly: true);
-            var code = TestOrApply(device, ref mode, testOnly: false);
-            var restart = code == DISP_CHANGE_RESTART ? " Restart may be required." : "";
-            return $"Custom mode {mode.dmPelsWidth}x{mode.dmPelsHeight} (uniform {uniform}px margins; asymmetric rejected by driver).{restart}";
+            // Caller may append restart note if needed.
         }
     }
 

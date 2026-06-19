@@ -78,6 +78,10 @@ internal static class AmdAdlCore
     private delegate int Adl2DisplayUnderscanSet(IntPtr context, int adapter, int display, int current);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DfpGpuScalingEnableGet(
+        IntPtr context, int adapter, int display, ref int support, ref int current, ref int defaultVal);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int display, int enabled);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -678,6 +682,10 @@ internal static class AmdAdlCore
         return (_flush, _gpuScalingSet);
     }
 
+    internal static IEnumerable<TargetDisplay> EnumerateTargetsPublic() => EnumerateTargets();
+
+    internal static IEnumerable<int> DisplayIndicesPublic(TargetDisplay target) => DisplayIndices(target);
+
     public static string GetCapabilitySummary()
     {
         try
@@ -697,12 +705,20 @@ internal static class AmdAdlCore
             var under = 0;
             underSupport(Context, target.Adapter, target.Display, ref under);
 
+            var gpuSupport = 0;
+            var gpuCurrent = 0;
+            var gpuDefault = 0;
+            if (TryGetDelegate<Adl2DfpGpuScalingEnableGet>("ADL2_DFP_GPUScalingEnable_Get") is { } gpuGet)
+            {
+                gpuGet(Context, target.Adapter, target.Display, ref gpuSupport, ref gpuCurrent, ref gpuDefault);
+            }
+
             NativeDisplay.TryGetResolution(out var w, out var h);
 
             return
                 $"GPU: AMD Radeon | {w}x{h} | adapter {target.Adapter} display {target.Display} " +
-                $"(phys {target.PhysicalDisplay}) | viewport={(viewportSupported != 0 ? "yes" : "no")} " +
-                $"underscan={(under != 0 ? "yes" : "no")} sizeCaps=0x{caps:X}";
+                $"(phys {target.PhysicalDisplay}) | gpuScaling={(gpuSupport != 0 ? "yes" : "no")} " +
+                $"viewport={(viewportSupported != 0 ? "yes" : "no")} underscan={(under != 0 ? "yes" : "no")}";
         }
         catch (Exception ex)
         {
