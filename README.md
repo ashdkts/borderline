@@ -4,7 +4,7 @@ Borderline adjusts **display underscan/overscan at the driver level** on Windows
 
 **Download:** https://github.com/ashdkts/borderline/releases/latest/download/borderline.exe
 
-## v1.1.0 — rewritten in C# / WinForms
+## v1.1.1 — rewritten in C# / WinForms
 
 Earlier Go builds could hang or crash on startup due to low-level Win32 issues. **v1.1.0 is a full rewrite** using .NET WinForms — a standard Windows UI stack that should open reliably.
 

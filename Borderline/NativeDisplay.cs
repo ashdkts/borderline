@@ -7,6 +7,7 @@ internal static class NativeDisplay
     private const int ENUM_CURRENT_SETTINGS = -1;
     private const int DISP_CHANGE_SUCCESSFUL = 0;
     private const int DISP_CHANGE_RESTART = 1;
+    private const int DISP_CHANGE_BADMODE = -2;
 
     private const int DM_PELSWIDTH = 0x80000;
     private const int DM_PELSHEIGHT = 0x100000;
@@ -83,7 +84,7 @@ internal static class NativeDisplay
     private static DEVMODE? _backup;
     private static string? _deviceName;
 
-    public static string ApplyCustomMode(int top, int bottom, int left, int right, bool nvidiaUnsafe)
+    public static string ApplyCustomMode(int top, int bottom, int left, int right, bool enableUnsafeModes)
     {
         if (!TryGetCurrentMode(out var current, out var device))
         {
@@ -104,9 +105,9 @@ internal static class NativeDisplay
                 $"Margins too large for {current.dmPelsWidth}x{current.dmPelsHeight}.");
         }
 
-        if (nvidiaUnsafe)
+        if (enableUnsafeModes)
         {
-            ChangeDisplaySettingsEx(device, IntPtr.Zero, IntPtr.Zero,
+            ChangeDisplaySettingsEx(NormalizeDevice(device), IntPtr.Zero, IntPtr.Zero,
                 ChangeDisplaySettingsFlags.CDS_ENABLE_UNSAFE_MODES, IntPtr.Zero);
         }
 
@@ -115,11 +116,25 @@ internal static class NativeDisplay
         mode.dmPelsWidth = newW;
         mode.dmPelsHeight = newH;
 
-        TestOrApply(device, ref mode, testOnly: true);
-
-        var code = TestOrApply(device, ref mode, testOnly: false);
-        var restart = code == DISP_CHANGE_RESTART ? " Restart may be required." : "";
-        return $"Custom mode {newW}x{newH} @ {mode.dmDisplayFrequency}Hz (was {current.dmPelsWidth}x{current.dmPelsHeight}).{restart}";
+        try
+        {
+            TestOrApply(device, ref mode, testOnly: true);
+            var code = TestOrApply(device, ref mode, testOnly: false);
+            var restart = code == DISP_CHANGE_RESTART ? " Restart may be required." : "";
+            return $"Custom mode {newW}x{newH} @ {mode.dmDisplayFrequency}Hz (was {current.dmPelsWidth}x{current.dmPelsHeight}).{restart}";
+        }
+        catch (InvalidOperationException) when (top != bottom || left != right)
+        {
+            var uniform = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
+            mode = current;
+            mode.dmFields = current.dmFields | DM_PELSWIDTH | DM_PELSHEIGHT | DM_DISPLAYFREQUENCY;
+            mode.dmPelsWidth = current.dmPelsWidth - uniform * 2;
+            mode.dmPelsHeight = current.dmPelsHeight - uniform * 2;
+            TestOrApply(device, ref mode, testOnly: true);
+            var code = TestOrApply(device, ref mode, testOnly: false);
+            var restart = code == DISP_CHANGE_RESTART ? " Restart may be required." : "";
+            return $"Custom mode {mode.dmPelsWidth}x{mode.dmPelsHeight} (uniform {uniform}px margins; asymmetric rejected by driver).{restart}";
+        }
     }
 
     public static string Restore()
@@ -129,12 +144,15 @@ internal static class NativeDisplay
             var mode = _backup.Value;
             TestOrApply(_deviceName, ref mode, testOnly: false);
             _backup = null;
-            return $"Restored {_deviceName} to {mode.dmPelsWidth}x{mode.dmPelsHeight}.";
+            return $"Restored to {mode.dmPelsWidth}x{mode.dmPelsHeight}.";
         }
 
         ChangeDisplaySettingsEx(null, IntPtr.Zero, IntPtr.Zero, ChangeDisplaySettingsFlags.CDS_RESET, IntPtr.Zero);
         return "Display reset to system default.";
     }
+
+    private static string? NormalizeDevice(string device) =>
+        string.IsNullOrEmpty(device) ? null : device;
 
     private static int TestOrApply(string device, ref DEVMODE mode, bool testOnly)
     {
@@ -143,14 +161,21 @@ internal static class NativeDisplay
             ? ChangeDisplaySettingsFlags.CDS_TEST
             : ChangeDisplaySettingsFlags.CDS_UPDATEREGISTRY;
 
-        var code = ChangeDisplaySettingsEx(device, ref mode, IntPtr.Zero, flags, IntPtr.Zero);
+        var code = ChangeDisplaySettingsEx(NormalizeDevice(device), ref mode, IntPtr.Zero, flags, IntPtr.Zero);
         if (code != DISP_CHANGE_SUCCESSFUL && code != DISP_CHANGE_RESTART)
         {
-            throw new InvalidOperationException($"ChangeDisplaySettingsEx failed (code {code}).");
+            throw new InvalidOperationException(DescribeError(code));
         }
 
         return code;
     }
+
+    private static string DescribeError(int code) => code switch
+    {
+        DISP_CHANGE_BADMODE => "display mode rejected by driver (code -2). Enable custom resolutions in AMD Software if available.",
+        -1 => "display change failed (code -1)",
+        _ => $"ChangeDisplaySettingsEx failed (code {code})",
+    };
 
     private static bool TryGetCurrentMode(out DEVMODE mode, out string device)
     {

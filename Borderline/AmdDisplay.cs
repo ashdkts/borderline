@@ -9,6 +9,20 @@ internal static class AmdDisplay
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate IntPtr ADLMainMemoryAlloc(int size);
 
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+    private struct ADLDisplayInfo
+    {
+        public int iDisplayIndex;
+        public int iDisplayLogicalAdapterIndex;
+        public int iDisplayLogicalIndex;
+        public int iDisplayControllerIndex;
+        public int displayType;
+        public int iDisplayOutputIndex;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 256)]
+        public string szDisplayName;
+        public int iDisplayConnector;
+    }
+
     [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
     private static extern int ADL_Main_Control_Create(ADLMainMemoryAlloc callback, int enumConnectedAdapters);
 
@@ -23,9 +37,6 @@ internal static class AmdDisplay
 
     [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
     private static extern int ADL_Display_DisplayInfo_Get(int adapterIndex, ref int numDisplays, IntPtr info, int forceRefresh);
-
-    [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
-    private static extern int ADL_Display_UnderscanSupport_Get(int adapterIndex, int displayIndex, ref int supported);
 
     [DllImport("atiadlxx.dll", CallingConvention = CallingConvention.StdCall)]
     private static extern int ADL_Display_UnderscanState_Set(int adapterIndex, int displayIndex, int enabled);
@@ -59,29 +70,6 @@ internal static class AmdDisplay
     private static int _display = -1;
     private static int _originalUnderscan;
 
-    public static bool Available
-    {
-        get
-        {
-            try
-            {
-                return ADL_Main_Control_Create(AllocCallback, 1) == ADL_OK;
-            }
-            catch (DllNotFoundException)
-            {
-                return false;
-            }
-            finally
-            {
-                if (_initialized)
-                {
-                    ADL_Main_Control_Destroy();
-                    _initialized = false;
-                }
-            }
-        }
-    }
-
     private static void EnsureInit()
     {
         if (_initialized)
@@ -97,10 +85,23 @@ internal static class AmdDisplay
         _initialized = true;
     }
 
-    public static string Apply(int top, int bottom, int left, int right)
+    /// <summary>Returns null on success (message in out param), or error reason string.</summary>
+    public static string? TryApply(int top, int bottom, int left, int right, out string? message)
     {
-        EnsureInit();
-        FindDisplay(out var adapter, out var display);
+        message = null;
+        try
+        {
+            EnsureInit();
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+
+        if (!FindDisplay(out var adapter, out var display, out var findError))
+        {
+            return findError;
+        }
 
         var current = 0;
         var defaultVal = 0;
@@ -109,7 +110,7 @@ internal static class AmdDisplay
         var step = 0;
         if (ADL_Display_Underscan_Get(adapter, display, ref current, ref defaultVal, ref min, ref max, ref step) != ADL_OK)
         {
-            throw new InvalidOperationException("Could not read AMD underscan settings.");
+            return "underscan not supported on this display";
         }
 
         if (_adapter < 0)
@@ -121,7 +122,7 @@ internal static class AmdDisplay
 
         if (!NativeDisplay.TryGetResolution(out var w, out var h))
         {
-            throw new InvalidOperationException("Could not read display resolution.");
+            return "could not read display resolution";
         }
 
         var margin = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
@@ -130,26 +131,36 @@ internal static class AmdDisplay
 
         if (ADL_Display_UnderscanState_Set(adapter, display, 1) != ADL_OK)
         {
-            throw new InvalidOperationException("Could not enable AMD underscan.");
+            return "could not enable underscan";
         }
 
         if (ADL_Display_Underscan_Set(adapter, display, target) != ADL_OK)
         {
-            throw new InvalidOperationException("Could not set AMD underscan value.");
+            return "could not set underscan value";
         }
 
         ADL_Flush_Driver_Data();
 
         var note = (top != bottom || left != right)
-            ? " Per-edge values use the largest margin (AMD driver limit)."
+            ? " Largest margin used (AMD driver limit)."
             : "";
 
-        return $"AMD underscan set to {target}% via driver.{note}";
+        message = $"AMD underscan {target}% via driver.{note}";
+        return null;
     }
 
     public static bool Restore()
     {
-        if (_adapter < 0 || !_initialized)
+        if (_adapter < 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            EnsureInit();
+        }
+        catch
         {
             return false;
         }
@@ -161,22 +172,19 @@ internal static class AmdDisplay
         return true;
     }
 
-    public static void Shutdown()
+    private static bool FindDisplay(out int adapter, out int display, out string error)
     {
-        if (_initialized)
-        {
-            ADL_Main_Control_Destroy();
-            _initialized = false;
-        }
-    }
+        adapter = 0;
+        display = 0;
+        error = "no AMD adapter found";
 
-    private static void FindDisplay(out int adapter, out int display)
-    {
         var numAdapters = 0;
-        if (ADL_Adapter_NumberOfAdapters_Get(ref numAdapters) != ADL_OK)
+        if (ADL_Adapter_NumberOfAdapters_Get(ref numAdapters) != ADL_OK || numAdapters <= 0)
         {
-            throw new InvalidOperationException("Could not enumerate AMD adapters.");
+            return false;
         }
+
+        var infoSize = Marshal.SizeOf<ADLDisplayInfo>();
 
         for (adapter = 0; adapter < numAdapters; adapter++)
         {
@@ -192,7 +200,6 @@ internal static class AmdDisplay
                 continue;
             }
 
-            const int infoSize = 296;
             var buffer = Marshal.AllocHGlobal(numDisplays * infoSize);
             try
             {
@@ -203,12 +210,19 @@ internal static class AmdDisplay
 
                 for (var i = 0; i < numDisplays; i++)
                 {
-                    var displayIndex = Marshal.ReadInt32(buffer, i * infoSize);
-                    var supported = 0;
-                    if (ADL_Display_UnderscanSupport_Get(adapter, displayIndex, ref supported) == ADL_OK && supported != 0)
+                    var ptr = buffer + (i * infoSize);
+                    var info = Marshal.PtrToStructure<ADLDisplayInfo>(ptr);
+                    display = info.iDisplayIndex;
+
+                    var current = 0;
+                    var defaultVal = 0;
+                    var min = 0;
+                    var max = 0;
+                    var step = 0;
+                    if (ADL_Display_Underscan_Get(adapter, display, ref current, ref defaultVal, ref min, ref max, ref step) == ADL_OK)
                     {
-                        display = displayIndex;
-                        return;
+                        error = string.Empty;
+                        return true;
                     }
                 }
             }
@@ -218,6 +232,7 @@ internal static class AmdDisplay
             }
         }
 
-        throw new InvalidOperationException("No AMD display with underscan support found.");
+        error = "underscan not supported on connected displays";
+        return false;
     }
 }

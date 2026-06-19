@@ -1,15 +1,24 @@
 namespace Borderline;
 
+internal enum ApplyMethod
+{
+    None,
+    AmdAdl,
+    Win32Custom,
+}
+
 internal static class DisplayService
 {
+    private static ApplyMethod _lastMethod;
+
     public static string GpuLabel()
     {
         return NativeDisplay.DetectVendor() switch
         {
-            GpuVendor.Amd => "GPU: AMD (ADL driver)",
-            GpuVendor.Nvidia => "GPU: NVIDIA (custom mode)",
-            GpuVendor.Intel => "GPU: Intel (custom mode)",
-            _ => "GPU: generic (custom mode)",
+            GpuVendor.Amd => "GPU: AMD (ADL if available, else custom resolution)",
+            GpuVendor.Nvidia => "GPU: NVIDIA (custom resolution)",
+            GpuVendor.Intel => "GPU: Intel (custom resolution)",
+            _ => "GPU: generic (custom resolution)",
         };
     }
 
@@ -22,27 +31,39 @@ internal static class DisplayService
 
         if (NativeDisplay.DetectVendor() == GpuVendor.Amd)
         {
-            try
+            var amdError = AmdDisplay.TryApply(settings.Top, settings.Bottom, settings.Left, settings.Right, out var amdMsg);
+            if (amdError is null)
             {
-                return AmdDisplay.Apply(settings.Top, settings.Bottom, settings.Left, settings.Right);
+                _lastMethod = ApplyMethod.AmdAdl;
+                return amdMsg!;
             }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException($"AMD path failed: {ex.Message}. Try again or use AMD Software.", ex);
-            }
+
+            var customMsg = NativeDisplay.ApplyCustomMode(
+                settings.Top, settings.Bottom, settings.Left, settings.Right,
+                enableUnsafeModes: true);
+            _lastMethod = ApplyMethod.Win32Custom;
+            return $"{customMsg} (ADL underscan unavailable: {amdError})";
         }
 
         var nvidia = NativeDisplay.DetectVendor() == GpuVendor.Nvidia;
+        _lastMethod = ApplyMethod.Win32Custom;
         return NativeDisplay.ApplyCustomMode(settings.Top, settings.Bottom, settings.Left, settings.Right, nvidia);
     }
 
     public static string Restore()
     {
-        if (AmdDisplay.Restore())
+        switch (_lastMethod)
         {
-            return "AMD display restored.";
+            case ApplyMethod.AmdAdl:
+                if (AmdDisplay.Restore())
+                {
+                    _lastMethod = ApplyMethod.None;
+                    return "AMD underscan restored.";
+                }
+                break;
         }
 
+        _lastMethod = ApplyMethod.None;
         return NativeDisplay.Restore();
     }
 }

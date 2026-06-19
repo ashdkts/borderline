@@ -2,15 +2,20 @@ namespace Borderline;
 
 internal sealed class MainForm : Form
 {
-    private readonly Label _gpuLabel = new() { AutoSize = false, Height = 20, Width = 380 };
-    private readonly Label _statusLabel = new() { AutoSize = false, Height = 48, Width = 380 };
+    private readonly Label _gpuLabel = new() { AutoSize = true, MaximumSize = new Size(420, 0) };
+    private readonly Label _statusLabel = new()
+    {
+        AutoSize = true,
+        MaximumSize = new Size(420, 0),
+        UseMnemonic = false,
+    };
     private readonly NumericUpDown _top = CreateMarginInput();
     private readonly NumericUpDown _bottom = CreateMarginInput();
     private readonly NumericUpDown _left = CreateMarginInput();
     private readonly NumericUpDown _right = CreateMarginInput();
-    private readonly Button _applyBtn = new() { Text = "Apply", Width = 90 };
-    private readonly Button _resetBtn = new() { Text = "Reset", Width = 90 };
-    private readonly Button _enableBtn = new() { Text = "Enable margins", Width = 120 };
+    private readonly Button _applyBtn = new() { Text = "Apply", Width = 96, Height = 32 };
+    private readonly Button _resetBtn = new() { Text = "Reset", Width = 96, Height = 32 };
+    private readonly Button _enableBtn = new() { Text = "Enable margins", Width = 130, Height = 32 };
 
     private AppSettings _settings = AppSettings.Load();
     private bool _busy;
@@ -19,36 +24,42 @@ internal sealed class MainForm : Form
     {
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "?";
         Text = $"Borderline v{version}";
-        ClientSize = new Size(420, 320);
+        AutoScaleMode = AutoScaleMode.Font;
+        Font = new Font("Segoe UI", 9.75f);
+        MinimumSize = new Size(480, 360);
+        ClientSize = new Size(480, 360);
         FormBorderStyle = FormBorderStyle.FixedSingle;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
+        Padding = new Padding(16);
 
         var layout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            Padding = new Padding(16),
             ColumnCount = 2,
-            RowCount = 8,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
         };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));
+        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 130));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
-        layout.Controls.Add(_gpuLabel, 0, 0);
-        layout.SetColumnSpan(_gpuLabel, 2);
+        AddRow(layout, 0, _gpuLabel, columnSpan: 2);
+        AddRow(layout, 1, new Label { Text = "Top (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _top);
+        AddRow(layout, 2, new Label { Text = "Bottom (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _bottom);
+        AddRow(layout, 3, new Label { Text = "Left (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _left);
+        AddRow(layout, 4, new Label { Text = "Right (px)", AutoSize = true, Anchor = AnchorStyles.Left }, _right);
 
-        AddRow(layout, 1, "Top (px)", _top);
-        AddRow(layout, 2, "Bottom (px)", _bottom);
-        AddRow(layout, 3, "Left (px)", _left);
-        AddRow(layout, 4, "Right (px)", _right);
-
-        var buttons = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false };
+        var buttons = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.LeftToRight,
+            AutoSize = true,
+            WrapContents = false,
+            Margin = new Padding(0, 8, 0, 8),
+        };
         buttons.Controls.AddRange([_applyBtn, _resetBtn, _enableBtn]);
-        layout.Controls.Add(buttons, 0, 5);
-        layout.SetColumnSpan(buttons, 2);
+        AddRow(layout, 5, buttons, columnSpan: 2);
 
-        layout.Controls.Add(_statusLabel, 0, 6);
-        layout.SetColumnSpan(_statusLabel, 2);
+        AddRow(layout, 6, _statusLabel, columnSpan: 2);
 
         Controls.Add(layout);
 
@@ -79,14 +90,22 @@ internal sealed class MainForm : Form
         };
     }
 
-    private static NumericUpDown CreateMarginInput() =>
-        new() { Minimum = 0, Maximum = 500, Width = 100 };
-
-    private static void AddRow(TableLayoutPanel layout, int row, string label, Control input)
+    private static void AddRow(TableLayoutPanel layout, int row, Control a, Control? b = null, int columnSpan = 1)
     {
-        layout.Controls.Add(new Label { Text = label, AutoSize = true, Anchor = AnchorStyles.Left }, 0, row);
-        layout.Controls.Add(input, 1, row);
+        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        layout.Controls.Add(a, 0, row);
+        if (columnSpan > 1)
+        {
+            layout.SetColumnSpan(a, columnSpan);
+        }
+        else if (b is not null)
+        {
+            layout.Controls.Add(b, 1, row);
+        }
     }
+
+    private static NumericUpDown CreateMarginInput() =>
+        new() { Minimum = 0, Maximum = 500, Width = 110, Height = 28 };
 
     private void LoadSettingsToUi()
     {
@@ -96,9 +115,8 @@ internal sealed class MainForm : Form
         _right.Value = Clamp(_settings.Right);
     }
 
-    private AppSettings ReadFromUi()
-    {
-        return new AppSettings
+    private AppSettings ReadFromUi() =>
+        new()
         {
             Top = (int)_top.Value,
             Bottom = (int)_bottom.Value,
@@ -106,7 +124,6 @@ internal sealed class MainForm : Form
             Right = (int)_right.Value,
             Enabled = _settings.Enabled,
         };
-    }
 
     private async Task ApplyAsync()
     {
