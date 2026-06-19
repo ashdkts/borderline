@@ -4,11 +4,11 @@ Borderline adjusts **display underscan/overscan at the driver level** on Windows
 
 **Download:** https://github.com/ashdkts/borderline/releases/latest/download/borderline.exe
 
-## v1.0.2 changes
+## v1.0.3 changes
 
-- **Fixes frozen UI** — driver changes run on a background thread; the window stays responsive
-- **AMD support** — uses AMD ADL (`atiadlxx.dll`) for native driver underscan on Radeon GPUs
-- **Auto-update** — checks GitHub Releases on launch and installs newer versions automatically
+- **Fixes startup hang** — removed trackbar controls (they blocked without a manifest); margins use number fields instead
+- **Window shows immediately** — UI builds inside `WM_CREATE`; no driver work until you click Apply
+- **Pinned Win32 callbacks** — prevents Go GC from breaking the window procedure
 
 ## Using Borderline
 

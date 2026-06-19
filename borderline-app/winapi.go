@@ -16,6 +16,7 @@ var (
 	procLoadCursor           = modUser32.NewProc("LoadCursorW")
 	procRegisterClassEx      = modUser32.NewProc("RegisterClassExW")
 	procCreateWindowEx       = modUser32.NewProc("CreateWindowExW")
+	procDestroyWindow        = modUser32.NewProc("DestroyWindow")
 	procShowWindow           = modUser32.NewProc("ShowWindow")
 	procUpdateWindow         = modUser32.NewProc("UpdateWindow")
 	procGetMessage           = modUser32.NewProc("GetMessageW")
@@ -26,9 +27,11 @@ var (
 	procPostMessage          = modUser32.NewProc("PostMessageW")
 	procSendMessage          = modUser32.NewProc("SendMessageW")
 	procSetWindowText        = modUser32.NewProc("SetWindowTextW")
+	procGetWindowText        = modUser32.NewProc("GetWindowTextW")
 	procEnableWindow         = modUser32.NewProc("EnableWindow")
 	procSetTimer             = modUser32.NewProc("SetTimer")
 	procKillTimer            = modUser32.NewProc("KillTimer")
+	procMessageBox           = modUser32.NewProc("MessageBoxW")
 	procInitCommonControlsEx = modComctl32.NewProc("InitCommonControlsEx")
 )
 
@@ -36,30 +39,26 @@ const (
 	wsOverlappedWindow = 0x00CF0000
 	wsChild            = 0x40000000
 	wsVisibleChild     = 0x40000000 | 0x10000000
+	wsExClientEdge     = 0x00000200
 
 	bsPushButton = 0x00000000
 	ssLeft       = 0x00000000
-
-	tbsHorz      = 0x0000
-	tbsAutoticks = 0x0001
-
-	tbmSetrange = 0x0405
-	tbmGetpos   = 0x0400
-	tbmSetpos   = 0x0409
+	esNumber     = 0x2000
 
 	cwUseDefault = ^uintptr(0) - 0x8000
 
-	wmCreate        = 0x0001
-	wmClose         = 0x0010
-	wmCommand       = 0x0111
-	wmDestroy       = 0x0002
-	wmHScroll       = 0x0114
-	wmDisplayChange = 0x007E
-	wmTimer         = 0x0113
-	wmApp           = 0x8000
+	wmCreate  = 0x0001
+	wmClose   = 0x0010
+	wmCommand = 0x0111
+	wmDestroy = 0x0002
+	wmTimer   = 0x0113
+	wmApp     = 0x8000
 
-	swShow   = 5
+	swShow = 5
 	idcArrow = 32512
+
+	mbOK        = 0x00000000
+	mbIconError = 0x00000010
 )
 
 type wndClassEx struct {
@@ -98,14 +97,10 @@ func utf16(s string) *uint16 {
 	return p
 }
 
-func makelong(low, high uint16) uintptr {
-	return uintptr(uint32(low) | (uint32(high) << 16))
-}
-
 func initCommonControls() {
 	ice := initCommonControlsEx{
 		Size: uint32(unsafe.Sizeof(initCommonControlsEx{})),
-		ICC:  0x00000004,
+		ICC:  0x00004004, // ICC_STANDARD_CLASSES | ICC_BAR_CLASSES
 	}
 	procInitCommonControlsEx.Call(uintptr(unsafe.Pointer(&ice)))
 }

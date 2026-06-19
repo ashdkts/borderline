@@ -4,41 +4,45 @@ package main
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
 
 const (
-	idTopSlider    = 1001
-	idBottomSlider = 1002
-	idLeftSlider   = 1003
-	idRightSlider  = 1004
-	idApplyBtn     = 1010
-	idResetBtn     = 1011
-	idEnableBtn    = 1012
+	idTopEdit    = 1001
+	idBottomEdit = 1002
+	idLeftEdit   = 1003
+	idRightEdit  = 1004
+	idApplyBtn   = 1010
+	idResetBtn   = 1011
+	idEnableBtn  = 1012
 
-	idStartupTimer = 1
+	idGPUTimer    = 1
+	idUpdateTimer = 2
+
+	wmAppStatus = wmApp + 1
 )
 
 const (
 	marginMax  = 500
 	labelWidth = 120
-	sliderW    = 220
-	rowHeight  = 36
-
-	wmAppStatus = wmApp + 1
+	editW      = 80
+	rowHeight  = 32
 )
 
 var (
 	appInstance     syscall.Handle
 	mainWnd         syscall.Handle
 	enableBtnHandle syscall.Handle
+	mainWndProcPtr  uintptr
 	current         Settings
 
-	suspendLiveApply int32
-	applyInProgress  int32
-	pendingStatus    string
+	applyInProgress int32
+	pendingStatus   string
+	controlsReady   bool
 
 	controls struct {
 		top, bottom, left, right syscall.Handle
@@ -51,23 +55,20 @@ func main() {
 
 	instance, _, _ := procGetModuleHandle.Call(0)
 	appInstance = syscall.Handle(instance)
+
+	mainWndProcPtr = syscall.NewCallback(mainWindowProc)
 	mustRegisterMainClass(appInstance)
 
 	current = loadSettings()
 
 	mainWnd = createMainWindow(appInstance)
-	layoutControls(mainWnd)
-	syncControlsFromSettings()
-	updateEnableButtonCaption()
+	if mainWnd == 0 {
+		showError("Borderline could not create its window.")
+		return
+	}
 
 	procShowWindow.Call(uintptr(mainWnd), swShow)
 	procUpdateWindow.Call(uintptr(mainWnd))
-	procSetTimer.Call(uintptr(mainWnd), idStartupTimer, 400, 0)
-
-	checkForUpdatesAsync(func(msg string) {
-		pendingStatus = msg
-		procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 0, 0)
-	})
 
 	runMessageLoop()
 }
@@ -82,24 +83,20 @@ func runMessageLoop() {
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&message)))
 		procDispatchMessage.Call(uintptr(unsafe.Pointer(&message)))
 	}
-
-	if current.Enabled {
-		_, _ = restoreDriverMargins()
-	}
 }
 
 func mustRegisterMainClass(instance syscall.Handle) {
 	className := utf16("BorderlineMainWindow")
 	wcx := wndClassEx{
 		Size:      uint32(unsafe.Sizeof(wndClassEx{})),
-		WndProc:   syscall.NewCallback(mainWindowProc),
+		WndProc:   mainWndProcPtr,
 		Instance:  instance,
 		ClassName: className,
 	}
 	cursor, _, _ := procLoadCursor.Call(0, idcArrow)
 	wcx.Cursor = syscall.Handle(cursor)
 	if ret, _, _ := procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wcx))); ret == 0 {
-		panic("RegisterClassExW failed for main window")
+		showError("RegisterClassEx failed.")
 	}
 }
 
@@ -111,31 +108,28 @@ func createMainWindow(instance syscall.Handle) syscall.Handle {
 		wsOverlappedWindow,
 		cwUseDefault,
 		cwUseDefault,
-		440,
-		360,
+		420,
+		340,
 		0,
 		0,
 		uintptr(instance),
 		0,
 	)
-	if hwnd == 0 {
-		panic("CreateWindowExW failed for main window")
-	}
 	return syscall.Handle(hwnd)
 }
 
 func layoutControls(parent syscall.Handle) {
 	y := 12
-	controls.gpuLabel = createStatic(parent, gpuStatusLabel(), 16, y, 400, 18)
+	controls.gpuLabel = createStatic(parent, "GPU: detecting…", 16, y, 380, 18)
 	y += 24
 
-	controls.top = createSliderRow(parent, "Top (px)", idTopSlider, 16, y)
+	controls.top = createEditRow(parent, "Top (px)", idTopEdit, 16, y)
 	y += rowHeight
-	controls.bottom = createSliderRow(parent, "Bottom (px)", idBottomSlider, 16, y)
+	controls.bottom = createEditRow(parent, "Bottom (px)", idBottomEdit, 16, y)
 	y += rowHeight
-	controls.left = createSliderRow(parent, "Left (px)", idLeftSlider, 16, y)
+	controls.left = createEditRow(parent, "Left (px)", idLeftEdit, 16, y)
 	y += rowHeight
-	controls.right = createSliderRow(parent, "Right (px)", idRightSlider, 16, y)
+	controls.right = createEditRow(parent, "Right (px)", idRightEdit, 16, y)
 	y += rowHeight + 8
 
 	createButton(parent, "Apply", idApplyBtn, 16, y, 90, 28)
@@ -143,9 +137,8 @@ func layoutControls(parent syscall.Handle) {
 	createButton(parent, "Enable margins", idEnableBtn, 216, y, 120, 28)
 	y += 40
 
-	controls.status = createStatic(parent,
-		"Ready. Driver changes run in the background so the window stays responsive.",
-		16, y, 400, 48)
+	controls.status = createStatic(parent, "Ready.", 16, y, 380, 48)
+	controlsReady = true
 }
 
 func createStatic(parent syscall.Handle, text string, x, y, w, h int) syscall.Handle {
@@ -175,49 +168,61 @@ func createButton(parent syscall.Handle, caption string, id, x, y, w, h int) sys
 	return syscall.Handle(hwnd)
 }
 
-func createSliderRow(parent syscall.Handle, label string, id, x, y int) syscall.Handle {
+func createEditRow(parent syscall.Handle, label string, id, x, y int) syscall.Handle {
 	createStatic(parent, label, x, y+4, labelWidth, 20)
 	hwnd, _, _ := procCreateWindowEx.Call(
-		0,
-		uintptr(unsafe.Pointer(utf16("msctls_trackbar32"))),
-		0,
-		wsVisibleChild|tbsHorz|tbsAutoticks,
-		uintptr(x+labelWidth), uintptr(y), uintptr(sliderW), uintptr(24),
+		wsExClientEdge,
+		uintptr(unsafe.Pointer(utf16("EDIT"))),
+		uintptr(unsafe.Pointer(utf16("0"))),
+		wsVisibleChild|esNumber,
+		uintptr(x+labelWidth), uintptr(y), uintptr(editW), uintptr(24),
 		uintptr(parent), uintptr(id), uintptr(appInstance), 0,
 	)
-	procSendMessage.Call(uintptr(hwnd), tbmSetrange, 1, makelong(0, marginMax))
 	return syscall.Handle(hwnd)
 }
 
 func syncControlsFromSettings() {
-	atomic.StoreInt32(&suspendLiveApply, 1)
-	setSliderPos(controls.top, current.Top)
-	setSliderPos(controls.bottom, current.Bottom)
-	setSliderPos(controls.left, current.Left)
-	setSliderPos(controls.right, current.Right)
-	atomic.StoreInt32(&suspendLiveApply, 0)
+	setEditValue(controls.top, current.Top)
+	setEditValue(controls.bottom, current.Bottom)
+	setEditValue(controls.left, current.Left)
+	setEditValue(controls.right, current.Right)
 }
 
-func setSliderPos(hwnd syscall.Handle, value int) {
-	procSendMessage.Call(uintptr(hwnd), tbmSetpos, 0, uintptr(value))
+func setEditValue(hwnd syscall.Handle, value int) {
+	if hwnd == 0 {
+		return
+	}
+	procSetWindowText.Call(uintptr(hwnd), uintptr(unsafe.Pointer(utf16(strconv.Itoa(value)))))
 }
 
-func sliderPos(hwnd syscall.Handle) int {
-	ret, _, _ := procSendMessage.Call(uintptr(hwnd), tbmGetpos, 0, 0)
-	return int(ret)
+func editValue(hwnd syscall.Handle) int {
+	if hwnd == 0 {
+		return 0
+	}
+	buf := make([]uint16, 32)
+	procGetWindowText.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), 32)
+	text := syscall.UTF16ToString(buf)
+	v, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0
+	}
+	return clampMargin(v)
 }
 
 func readSettingsFromUI() Settings {
 	return Settings{
-		Top:     clampMargin(sliderPos(controls.top)),
-		Bottom:  clampMargin(sliderPos(controls.bottom)),
-		Left:    clampMargin(sliderPos(controls.left)),
-		Right:   clampMargin(sliderPos(controls.right)),
+		Top:     editValue(controls.top),
+		Bottom:  editValue(controls.bottom),
+		Left:    editValue(controls.left),
+		Right:   editValue(controls.right),
 		Enabled: current.Enabled,
 	}
 }
 
 func applyFromUIAsync() {
+	if !controlsReady {
+		return
+	}
 	if !atomic.CompareAndSwapInt32(&applyInProgress, 0, 1) {
 		return
 	}
@@ -248,7 +253,7 @@ func applyFromUIAsync() {
 		}
 
 		_ = saveSettings(settings)
-		pendingStatus = fmt.Sprintf("%s  [%s]", status, enabledLabel())
+		pendingStatus = fmt.Sprintf("%s  [%s]", status, enabledLabelFor(settings))
 		procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 1, 0)
 	}()
 }
@@ -291,8 +296,8 @@ func setStatus(text string) {
 	}
 }
 
-func enabledLabel() string {
-	if current.Enabled {
+func enabledLabelFor(s Settings) string {
+	if s.Enabled {
 		return "ON"
 	}
 	return "OFF"
@@ -308,27 +313,51 @@ func updateEnableButtonCaption() {
 	}
 }
 
+func detectGPUAsync() {
+	go func() {
+		label := gpuStatusLabel()
+		pendingStatus = label
+		procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 0, 0)
+	}()
+}
+
 func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) uintptr {
 	switch uMsg {
 	case wmCreate:
+		layoutControls(hwnd)
+		syncControlsFromSettings()
+		updateEnableButtonCaption()
+		if current.Enabled {
+			setStatus("Saved margins loaded. Click Apply to re-enable.")
+		} else {
+			setStatus("Ready. Enter pixel margins, then click Apply.")
+		}
+		procSetTimer.Call(uintptr(hwnd), idGPUTimer, 200, 0)
+		procSetTimer.Call(uintptr(hwnd), idUpdateTimer, 8000, 0)
 		return 0
 	case wmTimer:
-		if wParam == idStartupTimer {
-			procKillTimer.Call(uintptr(hwnd), idStartupTimer)
-			if current.Enabled {
-				applyFromUIAsync()
-			}
+		switch wParam {
+		case idGPUTimer:
+			procKillTimer.Call(uintptr(hwnd), idGPUTimer)
+			detectGPUAsync()
+		case idUpdateTimer:
+			procKillTimer.Call(uintptr(hwnd), idUpdateTimer)
+			checkForUpdatesAsync(func(msg string) {
+				pendingStatus = msg
+				procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 0, 0)
+			})
 		}
 		return 0
 	case wmAppStatus:
-		setStatus(pendingStatus)
+		if controls.gpuLabel != 0 && strings.HasPrefix(pendingStatus, "GPU:") {
+			procSetWindowText.Call(uintptr(controls.gpuLabel), uintptr(unsafe.Pointer(utf16(pendingStatus))))
+		} else {
+			setStatus(pendingStatus)
+		}
 		if wParam != 0 {
 			setControlsEnabled(true)
 			updateEnableButtonCaption()
 		}
-		return 0
-	case wmHScroll:
-		onScroll(lParam)
 		return 0
 	case wmCommand:
 		switch loword(wParam) {
@@ -341,29 +370,19 @@ func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) ui
 			toggleEnabled()
 		}
 		return 0
-	case wmClose, wmDestroy:
+	case wmClose:
 		if current.Enabled {
-			_, _ = restoreDriverMargins()
+			go func() { _, _ = restoreDriverMargins() }()
 		}
+		procDestroyWindow.Call(uintptr(hwnd))
+		return 0
+	case wmDestroy:
 		procPostQuitMessage.Call(0)
 		return 0
 	}
 
 	ret, _, _ := procDefWindowProc.Call(uintptr(hwnd), uintptr(uMsg), wParam, lParam)
 	return ret
-}
-
-func onScroll(lParam uintptr) {
-	if atomic.LoadInt32(&suspendLiveApply) != 0 {
-		return
-	}
-	hwnd := syscall.Handle(lParam)
-	switch hwnd {
-	case controls.top, controls.bottom, controls.left, controls.right:
-		if current.Enabled {
-			applyFromUIAsync()
-		}
-	}
 }
 
 func loword(x uintptr) uint16 {
@@ -378,4 +397,13 @@ func clampMargin(v int) int {
 		return marginMax
 	}
 	return v
+}
+
+func showError(msg string) {
+	procMessageBox.Call(
+		0,
+		uintptr(unsafe.Pointer(utf16(msg))),
+		uintptr(unsafe.Pointer(utf16("Borderline"))),
+		mbOK|mbIconError,
+	)
 }

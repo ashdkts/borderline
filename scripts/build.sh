@@ -15,7 +15,7 @@ RELEASES="${ROOT}/releases"
 
 mkdir -p "${DIST}" "${RELEASES}"
 
-VERSION="${1:-1.0.2}"
+VERSION="${1:-1.0.3}"
 LDFLAGS="-s -w -H windowsgui -X main.appVersion=${VERSION} -X main.releaseRepo=ashdkts/borderline"
 
 echo "Building borderline.exe for Windows (v${VERSION})..."
@@ -36,7 +36,7 @@ fi
 
 cat > "${RELEASES}/latest.json" <<EOF
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "url": "http://127.0.0.1:8080/borderline.exe",
   "sha256": "${SHA256}"
 }

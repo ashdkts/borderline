@@ -38,6 +38,7 @@ type amdState struct {
 }
 
 var amd amdState
+var adlMallocCallback uintptr
 
 func adlMalloc(size int) uintptr {
 	if size <= 0 {
@@ -57,8 +58,11 @@ func amdInit() error {
 		return err
 	}
 
-	callback := syscall.NewCallback(adlMalloc)
-	ret, _, _ := procADLMainControlCreate.Call(callback, 1)
+	if adlMallocCallback == 0 {
+		adlMallocCallback = syscall.NewCallback(adlMalloc)
+	}
+
+	ret, _, _ := procADLMainControlCreate.Call(adlMallocCallback, 1)
 	if int32(ret) != adlOK {
 		return fmt.Errorf("ADL_Main_Control_Create failed (%d)", ret)
 	}
