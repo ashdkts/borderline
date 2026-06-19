@@ -21,13 +21,18 @@ internal static class AmdApply
 
         AmdAdlCore.PrepareForMargins();
         log.Add(AmdAdlCore.GetCapabilitySummary());
+        var caps = AmdAdlCore.QueryCaps();
+        log.Add($"capabilities: gpuScaling={(caps.GpuScaling ? "yes" : "no")} " +
+                $"viewport={(caps.ViewPort ? "yes" : "no")} underscan={(caps.Underscan ? "yes" : "no")}");
 
-        var (ok, msg) = Try("gpu-scaling", () =>
-        {
-            var err = AmdGpuScaling.TryApply(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
-            return err is null ? (true, m!) : (false, err);
-        }, log);
+        var (ok, msg) = caps.GpuScaling
+            ? Try("gpu-scaling", () =>
+            {
+                var err = AmdGpuScaling.TryApply(
+                    settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
+                return err is null ? (true, m!) : (false, err);
+            }, log)
+            : Skip("gpu-scaling", "not supported on this display", log);
         if (ok)
         {
             method = ApplyMethod.AmdGpuScaling;
@@ -35,11 +40,14 @@ internal static class AmdApply
             return msg;
         }
 
-        (ok, msg) = Try("viewport", () =>
-        {
-            var err = AmdAdlCore.TryApplyViewPort(settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
-            return err is null ? (true, m!) : (false, err);
-        }, log);
+        (ok, msg) = caps.ViewPort
+            ? Try("viewport", () =>
+            {
+                var err = AmdAdlCore.TryApplyViewPort(
+                    settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
+                return err is null ? (true, m!) : (false, err);
+            }, log)
+            : Skip("viewport", "not supported on this adapter", log);
         if (ok)
         {
             method = ApplyMethod.AmdViewPort;
@@ -47,11 +55,14 @@ internal static class AmdApply
             return msg;
         }
 
-        (ok, msg) = Try("underscan", () =>
-        {
-            var err = AmdAdlCore.TryApplyUnderscan(settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
-            return err is null ? (true, m!) : (false, err);
-        }, log);
+        (ok, msg) = caps.Underscan
+            ? Try("underscan", () =>
+            {
+                var err = AmdAdlCore.TryApplyUnderscan(
+                    settings.Top, settings.Bottom, settings.Left, settings.Right, out var m);
+                return err is null ? (true, m!) : (false, err);
+            }, log)
+            : Skip("underscan", "not supported on this display", log);
         if (ok)
         {
             method = ApplyMethod.AmdUnderscan;
@@ -95,22 +106,42 @@ internal static class AmdApply
             return msg;
         }
 
-        try
+        if (!caps.GpuScaling)
         {
-            log.Add("[windows] trying custom resolution…");
-            var custom = NativeDisplay.ApplyCustomMode(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, enableUnsafeModes: true);
-            log.Add($"[windows] ok: {custom}");
-            method = ApplyMethod.Win32Custom;
-            ApplyLog.Write(log);
-            return custom;
+            try
+            {
+                log.Add("[windows] trying custom resolution…");
+                var custom = NativeDisplay.ApplyCustomMode(
+                    settings.Top, settings.Bottom, settings.Left, settings.Right, enableUnsafeModes: true);
+                log.Add($"[windows] ok: {custom}");
+                method = ApplyMethod.Win32Custom;
+                ApplyLog.Write(log);
+                return custom;
+            }
+            catch (Exception ex)
+            {
+                log.Add($"[windows] {ex.Message}");
+            }
         }
-        catch (Exception ex)
+        else
         {
-            log.Add($"[windows] {ex.Message}");
-            ApplyLog.Write(log);
-            throw new InvalidOperationException(BuildFailureMessage(), ex);
+            log.Add("[windows] skipped (already attempted with GPU scaling path)");
         }
+
+        ApplyLog.Write(log);
+        CleanupAfterFailedApply();
+        throw new InvalidOperationException(ApplyFailureHelp.FullMessage);
+    }
+
+    public static void CleanupAfterFailedApply()
+    {
+        try { AmdGpuScaling.Restore(); } catch { }
+        try { AmdAdlCore.RestoreViewPort(); } catch { }
+        try { AmdAdlCore.RestoreUnderscan(); } catch { }
+        try { AmdAdlCore.RestoreOverscan(); } catch { }
+        try { AmdDalRegistry.Restore(); } catch { }
+        try { AmdAdl.Restore(); } catch { }
+        try { NativeDisplay.Restore(); } catch { }
     }
 
     public static bool Restore(ApplyMethod method) => method switch
@@ -141,14 +172,11 @@ internal static class AmdApply
         }
     }
 
-    private static string BuildFailureMessage() =>
-        "Your Radeon iGPU rejected every margin path Borderline tried (viewport, underscan, GPU scaling + custom resolution, registry, timing).\r\n\r\n" +
-        "This hardware/driver combo may not expose per-edge blanking. What often works on SER-class iGPUs:\r\n" +
-        "1. AMD Software → Gaming → Display → GPU Scaling ON, Scaling Mode Centered\r\n" +
-        "2. Windows Settings → Display → set a lower resolution (e.g. 1840×1000 on 1920×1080)\r\n" +
-        "   — centered scaling leaves blank bars at the native panel size\r\n" +
-        "3. Use equal margins on all sides in Borderline (asymmetric per-edge may not be supported)\r\n\r\n" +
-        $"Send this file if you want help: {ApplyLog.LastPath}";
+    private static (bool ok, string message) Skip(string name, string reason, List<string> log)
+    {
+        log.Add($"[{name}] skipped ({reason})");
+        return (false, reason);
+    }
 }
 
 internal static class ApplyLog

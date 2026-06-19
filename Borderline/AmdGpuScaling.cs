@@ -54,11 +54,10 @@ internal static class AmdGpuScaling
     private delegate int Adl2DisplayCustomizedModeAdd(
         IntPtr context, int adapter, int display, AdlCustomMode mode);
 
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2AdapterModesReEnumerate(IntPtr context);
-
     private static int? _backupGpuScaling;
     private static int? _backupExpansion;
+    private static int _activeAdapter;
+    private static int _activeDisplay;
     private static bool _appliedCustomMode;
 
     public static string? TryApply(int top, int bottom, int left, int right, out string? message)
@@ -83,54 +82,57 @@ internal static class AmdGpuScaling
             var uniform = top == bottom && left == right;
             if (!uniform)
             {
-                // Centered GPU scaling only gives symmetric borders; use largest margin.
                 var m = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
                 newW = nativeW - m * 2;
                 newH = nativeH - m * 2;
             }
 
-            string? lastErr = null;
-            foreach (var target in AmdAdlCore.EnumerateTargetsPublic())
+            var target = AmdAdlCore.Target;
+            var err = TryOnDisplay(
+                target, target.Display, nativeW, nativeH, newW, newH, hz,
+                left, right, top, bottom, uniform, out message);
+            if (err is null)
             {
-                foreach (var displayIndex in AmdAdlCore.DisplayIndicesPublic(target))
-                {
-                    lastErr = TryOnDisplay(
-                        target, displayIndex, nativeW, nativeH, newW, newH, hz,
-                        left, right, top, bottom, uniform, out message);
-                    if (lastErr is null)
-                    {
-                        return null;
-                    }
-                }
+                return null;
             }
 
-            return lastErr ?? "GPU scaling path unavailable";
+            Rollback();
+            return err;
         }
         catch (Exception ex)
         {
+            Rollback();
             return ex.Message;
         }
     }
 
     public static bool Restore()
     {
-        var restored = false;
+        Rollback();
+        return _backupGpuScaling is not null || _appliedCustomMode;
+    }
+
+    private static void Rollback()
+    {
         if (_appliedCustomMode)
         {
-            NativeDisplay.Restore();
+            try { NativeDisplay.Restore(); } catch { }
             _appliedCustomMode = false;
-            restored = true;
+        }
+
+        if (_backupGpuScaling is null && _backupExpansion is null)
+        {
+            return;
         }
 
         try
         {
-            var target = AmdAdlCore.Target;
             var gpuSet = AmdAdlCore.GetDelegate<Adl2DfpGpuScalingEnableSet>("ADL2_DFP_GPUScalingEnable_Set");
             var propSet = AmdAdlCore.GetDelegate<Adl2DisplayPropertySet>("ADL2_Display_Property_Set");
 
             if (_backupGpuScaling is int gs)
             {
-                gpuSet(AmdAdlCore.Context, target.Adapter, target.Display, gs);
+                gpuSet(AmdAdlCore.Context, _activeAdapter, _activeDisplay, gs);
             }
 
             if (_backupExpansion is int exp)
@@ -141,20 +143,18 @@ internal static class AmdGpuScaling
                     iPropertyType = PropertyTypeExpansion,
                     iExpansionMode = exp,
                 };
-                propSet(AmdAdlCore.Context, target.Adapter, target.Display, ref prop);
+                propSet(AmdAdlCore.Context, _activeAdapter, _activeDisplay, ref prop);
             }
-
-            AmdAdlCore.FlushAdapterDriver();
-            _backupGpuScaling = null;
-            _backupExpansion = null;
-            restored = true;
         }
         catch
         {
             // Best effort.
         }
-
-        return restored;
+        finally
+        {
+            _backupGpuScaling = null;
+            _backupExpansion = null;
+        }
     }
 
     private static string? TryOnDisplay(
@@ -173,6 +173,8 @@ internal static class AmdGpuScaling
         out string? message)
     {
         message = null;
+        _activeAdapter = target.Adapter;
+        _activeDisplay = displayIndex;
 
         var gpuGet = AmdAdlCore.GetDelegate<Adl2DfpGpuScalingEnableGet>("ADL2_DFP_GPUScalingEnable_Get");
         var gpuSet = AmdAdlCore.GetDelegate<Adl2DfpGpuScalingEnableSet>("ADL2_DFP_GPUScalingEnable_Set");
@@ -185,17 +187,14 @@ internal static class AmdGpuScaling
         if (gpuGet(AmdAdlCore.Context, target.Adapter, displayIndex, ref support, ref current, ref defaultVal) != AdlOk ||
             support == 0)
         {
-            return $"GPU scaling not supported (display {displayIndex})";
+            return "GPU scaling not supported on primary display";
         }
 
-        if (_backupGpuScaling is null)
-        {
-            _backupGpuScaling = current;
-        }
+        _backupGpuScaling ??= current;
 
         if (gpuSet(AmdAdlCore.Context, target.Adapter, displayIndex, 1) != AdlOk)
         {
-            return $"could not enable GPU scaling (display {displayIndex})";
+            return "could not enable GPU scaling";
         }
 
         var underProp = new AdlDisplayProperty { iSize = Marshal.SizeOf<AdlDisplayProperty>() };
@@ -211,48 +210,44 @@ internal static class AmdGpuScaling
         expProp.iPropertyType = PropertyTypeExpansion;
         if (propGet(AmdAdlCore.Context, target.Adapter, displayIndex, ref expProp) != AdlOk)
         {
-            return $"expansion mode get failed (display {displayIndex})";
+            return "expansion mode get failed";
         }
 
-        if (_backupExpansion is null)
-        {
-            _backupExpansion = expProp.iExpansionMode;
-        }
+        _backupExpansion ??= expProp.iExpansionMode;
 
         expProp.iExpansionMode = ExpansionCenter;
         if (propSet(AmdAdlCore.Context, target.Adapter, displayIndex, ref expProp) != AdlOk)
         {
-            return $"could not set centered scaling (display {displayIndex})";
+            return "could not set centered scaling";
         }
 
         TryAddCustomMode(target, displayIndex, nativeW, nativeH, newW, newH, hz);
 
         try
         {
-            var marginNote = uniform
-                ? ""
-                : " (symmetric margins only on this GPU)";
+            var marginNote = uniform ? "" : " (symmetric margins only on this GPU)";
             var t = uniform ? top : Math.Max(Math.Max(top, bottom), Math.Max(left, right));
             var b = uniform ? bottom : t;
             var l = uniform ? left : t;
             var r = uniform ? right : t;
 
-            var result = NativeDisplay.ApplyCustomMode(t, b, l, r, enableUnsafeModes: true);
-            _appliedCustomMode = true;
+            NativeDisplay.ApplyCustomMode(t, b, l, r, enableUnsafeModes: true);
 
             if (!NativeDisplay.TryGetResolution(out var actualW, out var actualH) ||
                 (actualW == nativeW && actualH == nativeH))
             {
-                return $"custom mode {newW}x{newH} rejected after enabling GPU scaling (display {displayIndex})";
+                try { NativeDisplay.Restore(); } catch { }
+                return $"custom mode {newW}x{newH} rejected after enabling GPU scaling";
             }
 
-            AmdAdlCore.FlushAdapterDriver();
+            _appliedCustomMode = true;
             message =
-                $"GPU scaling centered at {actualW}x{actualH} (panel {nativeW}x{nativeH}, display {displayIndex}){marginNote}. {result}";
+                $"GPU scaling centered at {actualW}x{actualH} (panel {nativeW}x{nativeH}){marginNote}.";
             return null;
         }
         catch (Exception ex)
         {
+            try { NativeDisplay.Restore(); } catch { }
             return ex.Message;
         }
     }
@@ -269,7 +264,6 @@ internal static class AmdGpuScaling
         try
         {
             var add = AmdAdlCore.TryGetDelegate<Adl2DisplayCustomizedModeAdd>("ADL2_Display_CustomizedMode_Add");
-            var reEnum = AmdAdlCore.TryGetDelegate<Adl2AdapterModesReEnumerate>("ADL2_Adapter_Modes_ReEnumerate");
             if (add is null)
             {
                 return;
@@ -284,8 +278,10 @@ internal static class AmdGpuScaling
                 iBaseModeHeight = nativeH,
                 iRefreshRate = hz,
             };
-            add(AmdAdlCore.Context, target.Adapter, displayIndex, mode);
-            reEnum?.Invoke(AmdAdlCore.Context);
+            if (add(AmdAdlCore.Context, target.Adapter, displayIndex, mode) == AdlOk)
+            {
+                // Mode list refresh can flash the display; skip unless add succeeded.
+            }
         }
         catch
         {

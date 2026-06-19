@@ -56,6 +56,7 @@ internal static class AmdDalRegistry
             var readBack = (int)(key.GetValue("Underscan") ?? -1);
             if (readBack != targetPercent)
             {
+                key.SetValue("Underscan", current, RegistryValueKind.DWord);
                 return $"registry write failed (wanted {targetPercent}, got {readBack})";
             }
 

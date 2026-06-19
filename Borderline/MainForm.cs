@@ -14,7 +14,19 @@ internal sealed class MainForm : Form
     private readonly Button _applyBtn = new() { Text = "Apply", Left = 16, Top = 200, Width = 100, Height = 34 };
     private readonly Button _resetBtn = new() { Text = "Reset", Left = 126, Top = 200, Width = 100, Height = 34 };
     private readonly Button _enableBtn = new() { Text = "Enable margins", Left = 236, Top = 200, Width = 130, Height = 34 };
-    private readonly Label _statusLabel = new() { Left = 16, Top = 250, Width = 460, Height = 96 };
+    private readonly Button _helpBtn = new() { Text = "Manual setup", Left = 376, Top = 200, Width = 100, Height = 34 };
+    private readonly TextBox _statusBox = new()
+    {
+        Left = 16,
+        Top = 248,
+        Width = 460,
+        Height = 100,
+        Multiline = true,
+        ReadOnly = true,
+        ScrollBars = ScrollBars.Vertical,
+        BorderStyle = BorderStyle.FixedSingle,
+        BackColor = SystemColors.Window,
+    };
 
     private AppSettings _settings = AppSettings.Load();
     private bool _busy;
@@ -24,7 +36,7 @@ internal sealed class MainForm : Form
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "?";
         Text = $"Borderline v{version}";
         Font = new Font("Segoe UI", 10f);
-        ClientSize = new Size(500, 370);
+        ClientSize = new Size(500, 380);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -32,16 +44,17 @@ internal sealed class MainForm : Form
         Controls.AddRange([
             _gpuLabel, _lblTop, _lblBottom, _lblLeft, _lblRight,
             _top, _bottom, _left, _right,
-            _applyBtn, _resetBtn, _enableBtn, _statusLabel,
+            _applyBtn, _resetBtn, _enableBtn, _helpBtn, _statusBox,
         ]);
 
         _applyBtn.Click += (_, _) => { _settings.Enabled = true; _ = ApplyAsync(); };
         _resetBtn.Click += (_, _) => ResetUi();
         _enableBtn.Click += (_, _) => { _settings.Enabled = !_settings.Enabled; _ = ApplyAsync(); };
+        _helpBtn.Click += (_, _) => ShowManualSetupHelp();
 
         LoadSettingsToUi();
         UpdateEnableCaption();
-        _statusLabel.Text = "Enter pixel margins, then click Apply.";
+        _statusBox.Text = "Enter pixel margins, then click Apply.";
 
         Shown += OnShown;
         FormClosing += (_, _) =>
@@ -89,7 +102,12 @@ internal sealed class MainForm : Form
         }
         catch (Exception ex)
         {
-            SetStatus("Error: " + ex.Message);
+            SetStatus(ApplyFailureHelp.ShortStatus);
+            MessageBox.Show(
+                ex.Message,
+                "Borderline — apply failed",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
         finally
         {
@@ -118,7 +136,14 @@ internal sealed class MainForm : Form
         _applyBtn.Enabled = _resetBtn.Enabled = _enableBtn.Enabled = enabled;
     }
 
-    private void SetStatus(string text) => _statusLabel.Text = text;
+    private void SetStatus(string text) => _statusBox.Text = text;
+
+    private static void ShowManualSetupHelp() =>
+        MessageBox.Show(
+            ApplyFailureHelp.FullMessage,
+            "Borderline — manual setup for Radeon iGPUs",
+            MessageBoxButtons.OK,
+            MessageBoxIcon.Information);
 
     private async void OnShown(object? sender, EventArgs e)
     {

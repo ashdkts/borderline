@@ -240,26 +240,35 @@ internal static class AmdAdlCore
         }
     }
 
-    private static bool _gpuScalingPrepared;
-
     public static void PrepareForMargins()
     {
-        if (_gpuScalingPrepared)
+        EnsureLoaded();
+    }
+
+    internal readonly record struct AmdDisplayCaps(bool GpuScaling, bool ViewPort, bool Underscan);
+
+    internal static AmdDisplayCaps QueryCaps()
+    {
+        EnsureLoaded();
+        var target = Target;
+
+        var viewportSupported = 0;
+        GetDelegate<Adl2DisplayViewPortCap>("ADL2_Display_ViewPort_Cap")
+            .Invoke(Context, target.Adapter, ref viewportSupported);
+
+        var under = 0;
+        GetDelegate<Adl2DisplayUnderscanSupportGet>("ADL2_Display_UnderscanSupport_Get")
+            .Invoke(Context, target.Adapter, target.Display, ref under);
+
+        var gpuSupport = 0;
+        var gpuCurrent = 0;
+        var gpuDefault = 0;
+        if (TryGetDelegate<Adl2DfpGpuScalingEnableGet>("ADL2_DFP_GPUScalingEnable_Get") is { } gpuGet)
         {
-            return;
+            gpuGet(Context, target.Adapter, target.Display, ref gpuSupport, ref gpuCurrent, ref gpuDefault);
         }
 
-        try
-        {
-            EnsureLoadedDelegates();
-            var target = Target;
-            _gpuScalingSet?.Invoke(Context, target.Adapter, target.Display, 1);
-            _gpuScalingPrepared = true;
-        }
-        catch
-        {
-            // GPU scaling is optional; size/underscan may still work.
-        }
+        return new AmdDisplayCaps(gpuSupport != 0, viewportSupported != 0, under != 0);
     }
 
     public static void FlushAdapterDriver()
@@ -488,7 +497,6 @@ internal static class AmdAdlCore
             var stateSet = GetDelegate<Adl2DisplayUnderscanStateSet>("ADL2_Display_UnderscanState_Set");
             var underGet = GetDelegate<Adl2DisplayUnderscanGet>("ADL2_Display_Underscan_Get");
             var underSet = GetDelegate<Adl2DisplayUnderscanSet>("ADL2_Display_Underscan_Set");
-            _gpuScalingSet?.Invoke(Context, target.Adapter, displayIndex, 1);
 
             var support = 0;
             if (supportGet(Context, target.Adapter, displayIndex, ref support) != AdlOk || support == 0)
@@ -854,7 +862,6 @@ internal static class AmdAdlCore
 
         var viewPortGet = GetDelegate<Adl2DisplayViewPortGet>("ADL2_Display_ViewPort_Get");
         var viewPortSet = GetDelegate<Adl2DisplayViewPortSet>("ADL2_Display_ViewPort_Set");
-        _gpuScalingSet?.Invoke(Context, target.Adapter, displayIndex, 1);
 
         var mode = new AdlControllerMode();
         if (viewPortGet(Context, target.Adapter, displayIndex, ref mode) != AdlOk)
@@ -886,8 +893,6 @@ internal static class AmdAdlCore
             return $"viewport set rejected on display {displayIndex}";
         }
 
-        Flush(Context, target.Adapter);
-
         var verify = new AdlControllerMode();
         viewPortGet(Context, target.Adapter, displayIndex, ref verify);
         if (verify.iViewResolutionCx == beforeW && verify.iViewResolutionCy == beforeH &&
@@ -898,6 +903,7 @@ internal static class AmdAdlCore
             return $"driver ignored viewport on display {displayIndex}";
         }
 
+        Flush(Context, target.Adapter);
         message =
             $"AMD viewport {beforeW}x{beforeH} -> {verify.iViewResolutionCx}x{verify.iViewResolutionCy} " +
             $"(adapter {target.Adapter}, display {displayIndex}, pos {left},{top}).";
