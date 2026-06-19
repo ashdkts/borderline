@@ -5,3 +5,7 @@ publish/
 *.exe
 .DS_Store
 borderline-app/
+Borderline/bin/
+Borderline/obj/
+bin/
+obj/
