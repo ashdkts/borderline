@@ -15,11 +15,14 @@ RELEASES="${ROOT}/releases"
 
 mkdir -p "${DIST}" "${RELEASES}"
 
-echo "Building borderline.exe for Windows..."
+VERSION="${1:-1.0.2}"
+LDFLAGS="-s -w -H windowsgui -X main.appVersion=${VERSION} -X main.releaseRepo=ashdkts/borderline"
+
+echo "Building borderline.exe for Windows (v${VERSION})..."
 (
   cd "${ROOT}/borderline-app"
   GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
-    go build -ldflags="-s -w -H windowsgui" -o "${DIST}/borderline.exe" .
+    go build -ldflags="${LDFLAGS}" -o "${DIST}/borderline.exe" .
 )
 
 if command -v shasum >/dev/null 2>&1; then
@@ -33,7 +36,7 @@ fi
 
 cat > "${RELEASES}/latest.json" <<EOF
 {
-  "version": "1.0.0",
+  "version": "1.0.2",
   "url": "http://127.0.0.1:8080/borderline.exe",
   "sha256": "${SHA256}"
 }

@@ -23,14 +23,17 @@ var (
 	procDispatchMessage      = modUser32.NewProc("DispatchMessageW")
 	procDefWindowProc        = modUser32.NewProc("DefWindowProcW")
 	procPostQuitMessage      = modUser32.NewProc("PostQuitMessage")
+	procPostMessage          = modUser32.NewProc("PostMessageW")
 	procSendMessage          = modUser32.NewProc("SendMessageW")
 	procSetWindowText        = modUser32.NewProc("SetWindowTextW")
+	procEnableWindow         = modUser32.NewProc("EnableWindow")
+	procSetTimer             = modUser32.NewProc("SetTimer")
+	procKillTimer            = modUser32.NewProc("KillTimer")
 	procInitCommonControlsEx = modComctl32.NewProc("InitCommonControlsEx")
 )
 
 const (
 	wsOverlappedWindow = 0x00CF0000
-	wsVisible          = 0x10000000
 	wsChild            = 0x40000000
 	wsVisibleChild     = 0x40000000 | 0x10000000
 
@@ -46,11 +49,14 @@ const (
 
 	cwUseDefault = ^uintptr(0) - 0x8000
 
+	wmCreate        = 0x0001
 	wmClose         = 0x0010
 	wmCommand       = 0x0111
 	wmDestroy       = 0x0002
 	wmHScroll       = 0x0114
 	wmDisplayChange = 0x007E
+	wmTimer         = 0x0113
+	wmApp           = 0x8000
 
 	swShow   = 5
 	idcArrow = 32512

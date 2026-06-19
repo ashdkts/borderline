@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -16,6 +17,8 @@ const (
 	idApplyBtn     = 1010
 	idResetBtn     = 1011
 	idEnableBtn    = 1012
+
+	idStartupTimer = 1
 )
 
 const (
@@ -23,6 +26,8 @@ const (
 	labelWidth = 120
 	sliderW    = 220
 	rowHeight  = 36
+
+	wmAppStatus = wmApp + 1
 )
 
 var (
@@ -30,9 +35,14 @@ var (
 	mainWnd         syscall.Handle
 	enableBtnHandle syscall.Handle
 	current         Settings
-	controls        struct {
+
+	suspendLiveApply int32
+	applyInProgress  int32
+	pendingStatus    string
+
+	controls struct {
 		top, bottom, left, right syscall.Handle
-		status                   syscall.Handle
+		status, gpuLabel         syscall.Handle
 	}
 )
 
@@ -48,22 +58,24 @@ func main() {
 	mainWnd = createMainWindow(appInstance)
 	layoutControls(mainWnd)
 	syncControlsFromSettings()
-	if current.Enabled {
-		applyFromUI()
-	}
 	updateEnableButtonCaption()
 
 	procShowWindow.Call(uintptr(mainWnd), swShow)
 	procUpdateWindow.Call(uintptr(mainWnd))
+	procSetTimer.Call(uintptr(mainWnd), idStartupTimer, 400, 0)
 
+	checkForUpdatesAsync(func(msg string) {
+		pendingStatus = msg
+		procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 0, 0)
+	})
+
+	runMessageLoop()
+}
+
+func runMessageLoop() {
 	var message msg
 	for {
-		ret, _, _ := procGetMessage.Call(
-			uintptr(unsafe.Pointer(&message)),
-			0,
-			0,
-			0,
-		)
+		ret, _, _ := procGetMessage.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
 		if ret == 0 {
 			break
 		}
@@ -95,12 +107,12 @@ func createMainWindow(instance syscall.Handle) syscall.Handle {
 	hwnd, _, _ := procCreateWindowEx.Call(
 		0,
 		uintptr(unsafe.Pointer(utf16("BorderlineMainWindow"))),
-		uintptr(unsafe.Pointer(utf16("Borderline — Display margins"))),
-		wsOverlappedWindow|wsVisible,
+		uintptr(unsafe.Pointer(utf16(fmt.Sprintf("Borderline v%s", appVersion)))),
+		wsOverlappedWindow,
 		cwUseDefault,
 		cwUseDefault,
-		420,
-		340,
+		440,
+		360,
 		0,
 		0,
 		uintptr(instance),
@@ -113,7 +125,10 @@ func createMainWindow(instance syscall.Handle) syscall.Handle {
 }
 
 func layoutControls(parent syscall.Handle) {
-	y := 16
+	y := 12
+	controls.gpuLabel = createStatic(parent, gpuStatusLabel(), 16, y, 400, 18)
+	y += 24
+
 	controls.top = createSliderRow(parent, "Top (px)", idTopSlider, 16, y)
 	y += rowHeight
 	controls.bottom = createSliderRow(parent, "Bottom (px)", idBottomSlider, 16, y)
@@ -129,8 +144,8 @@ func layoutControls(parent syscall.Handle) {
 	y += 40
 
 	controls.status = createStatic(parent,
-		"Applies a driver-level custom resolution so the GPU leaves unused panel area (blank, not an overlay).",
-		16, y, 380, 56)
+		"Ready. Driver changes run in the background so the window stays responsive.",
+		16, y, 400, 48)
 }
 
 func createStatic(parent syscall.Handle, text string, x, y, w, h int) syscall.Handle {
@@ -175,14 +190,16 @@ func createSliderRow(parent syscall.Handle, label string, id, x, y int) syscall.
 }
 
 func syncControlsFromSettings() {
+	atomic.StoreInt32(&suspendLiveApply, 1)
 	setSliderPos(controls.top, current.Top)
 	setSliderPos(controls.bottom, current.Bottom)
 	setSliderPos(controls.left, current.Left)
 	setSliderPos(controls.right, current.Right)
+	atomic.StoreInt32(&suspendLiveApply, 0)
 }
 
 func setSliderPos(hwnd syscall.Handle, value int) {
-	procSendMessage.Call(uintptr(hwnd), tbmSetpos, 1, uintptr(value))
+	procSendMessage.Call(uintptr(hwnd), tbmSetpos, 0, uintptr(value))
 }
 
 func sliderPos(hwnd syscall.Handle) int {
@@ -190,33 +207,71 @@ func sliderPos(hwnd syscall.Handle) int {
 	return int(ret)
 }
 
-func applyFromUI() {
-	current.Top = clampMargin(sliderPos(controls.top))
-	current.Bottom = clampMargin(sliderPos(controls.bottom))
-	current.Left = clampMargin(sliderPos(controls.left))
-	current.Right = clampMargin(sliderPos(controls.right))
+func readSettingsFromUI() Settings {
+	return Settings{
+		Top:     clampMargin(sliderPos(controls.top)),
+		Bottom:  clampMargin(sliderPos(controls.bottom)),
+		Left:    clampMargin(sliderPos(controls.left)),
+		Right:   clampMargin(sliderPos(controls.right)),
+		Enabled: current.Enabled,
+	}
+}
 
-	var status string
-	if current.Enabled {
-		msg, err := applyDriverMargins(current)
-		if err != nil {
-			status = "Error: " + err.Error()
-		} else {
-			status = msg
-		}
-	} else {
-		msg, _ := restoreDriverMargins()
-		status = msg
+func applyFromUIAsync() {
+	if !atomic.CompareAndSwapInt32(&applyInProgress, 0, 1) {
+		return
 	}
 
-	_ = saveSettings(current)
-	setStatus(fmt.Sprintf("%s  [%s]", status, enabledLabel()))
+	current = readSettingsFromUI()
+	setControlsEnabled(false)
+	setStatus("Applying driver settings…")
+
+	settings := current
+	go func() {
+		defer atomic.StoreInt32(&applyInProgress, 0)
+
+		var status string
+		if settings.Enabled {
+			msg, err := applyDriverMargins(settings)
+			if err != nil {
+				status = "Error: " + err.Error()
+			} else {
+				status = msg
+			}
+		} else {
+			msg, err := restoreDriverMargins()
+			if err != nil {
+				status = msg + " (" + err.Error() + ")"
+			} else {
+				status = msg
+			}
+		}
+
+		_ = saveSettings(settings)
+		pendingStatus = fmt.Sprintf("%s  [%s]", status, enabledLabel())
+		procPostMessage.Call(uintptr(mainWnd), wmAppStatus, 1, 0)
+	}()
+}
+
+func setControlsEnabled(enabled bool) {
+	flag := uintptr(0)
+	if enabled {
+		flag = 1
+	}
+	for _, hwnd := range []syscall.Handle{
+		controls.top, controls.bottom, controls.left, controls.right,
+		enableBtnHandle,
+	} {
+		if hwnd != 0 {
+			procEnableWindow.Call(uintptr(hwnd), flag)
+		}
+	}
 }
 
 func resetSettings() {
 	if current.Enabled {
 		current.Enabled = false
-		_, _ = restoreDriverMargins()
+		applyFromUIAsync()
 	}
 	current = defaultSettings()
 	syncControlsFromSettings()
@@ -227,11 +282,13 @@ func resetSettings() {
 
 func toggleEnabled() {
 	current.Enabled = !current.Enabled
-	applyFromUI()
+	applyFromUIAsync()
 }
 
 func setStatus(text string) {
-	procSetWindowText.Call(uintptr(controls.status), uintptr(unsafe.Pointer(utf16(text))))
+	if controls.status != 0 {
+		procSetWindowText.Call(uintptr(controls.status), uintptr(unsafe.Pointer(utf16(text))))
+	}
 }
 
 func enabledLabel() string {
@@ -253,6 +310,23 @@ func updateEnableButtonCaption() {
 
 func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) uintptr {
 	switch uMsg {
+	case wmCreate:
+		return 0
+	case wmTimer:
+		if wParam == idStartupTimer {
+			procKillTimer.Call(uintptr(hwnd), idStartupTimer)
+			if current.Enabled {
+				applyFromUIAsync()
+			}
+		}
+		return 0
+	case wmAppStatus:
+		setStatus(pendingStatus)
+		if wParam != 0 {
+			setControlsEnabled(true)
+			updateEnableButtonCaption()
+		}
+		return 0
 	case wmHScroll:
 		onScroll(lParam)
 		return 0
@@ -260,13 +334,11 @@ func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) ui
 		switch loword(wParam) {
 		case idApplyBtn:
 			current.Enabled = true
-			applyFromUI()
-			updateEnableButtonCaption()
+			applyFromUIAsync()
 		case idResetBtn:
 			resetSettings()
 		case idEnableBtn:
 			toggleEnabled()
-			updateEnableButtonCaption()
 		}
 		return 0
 	case wmClose, wmDestroy:
@@ -282,11 +354,14 @@ func mainWindowProc(hwnd syscall.Handle, uMsg uint32, wParam, lParam uintptr) ui
 }
 
 func onScroll(lParam uintptr) {
+	if atomic.LoadInt32(&suspendLiveApply) != 0 {
+		return
+	}
 	hwnd := syscall.Handle(lParam)
 	switch hwnd {
 	case controls.top, controls.bottom, controls.left, controls.right:
 		if current.Enabled {
-			applyFromUI()
+			applyFromUIAsync()
 		}
 	}
 }

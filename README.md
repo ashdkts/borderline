@@ -1,79 +1,49 @@
 # Borderline
 
-Borderline adjusts **display underscan/overscan at the driver level** on Windows. Instead of drawing black overlay bars, it registers a **custom resolution** with the graphics driver so the desktop uses fewer pixels and the GPU leaves the trimmed panel area unused (blank — nothing is drawn there by Borderline or the OS desktop).
+Borderline adjusts **display underscan/overscan at the driver level** on Windows. Unused panel area stays blank — Borderline does not draw overlay bars.
 
-macOS support is planned; v1 targets Windows only.
+**Download:** https://github.com/ashdkts/borderline/releases/latest/download/borderline.exe
 
-## Download on Windows
+## v1.0.2 changes
 
-**https://github.com/ashdkts/borderline/releases/latest/download/borderline.exe**
+- **Fixes frozen UI** — driver changes run on a background thread; the window stays responsive
+- **AMD support** — uses AMD ADL (`atiadlxx.dll`) for native driver underscan on Radeon GPUs
+- **Auto-update** — checks GitHub Releases on launch and installs newer versions automatically
 
-Double-click to run — no installer.
+## Using Borderline
 
-### Using Borderline
-
-1. Launch **Borderline**.
+1. Launch **Borderline** (shows detected GPU at the top).
 2. Set **Top / Bottom / Left / Right** margins in pixels.
 3. Click **Apply** or **Enable margins**.
-4. The driver switches to a smaller mode (e.g. 1880×1040 instead of 1920×1080). Unused edges are blank on the physical panel.
-5. Click **Disable margins** or **Reset** to restore your previous mode.
+4. Click **Disable margins** or **Reset** to restore your previous mode.
 
 Settings persist in `%APPDATA%\Borderline\settings.json`.
 
-## How it works (driver level)
+## GPU support
 
-Borderline calls the Windows **`ChangeDisplaySettingsEx`** API to apply a custom display mode:
+| GPU | Method |
+|-----|--------|
+| **AMD** | ADL driver underscan (native). Per-edge sliders use the **largest** margin as uniform underscan — AMD’s driver API does not expose independent edge values. |
+| **NVIDIA** | Custom resolution via Windows display API (+ unsafe modes for custom timings) |
+| **Intel / other** | Custom resolution via Windows display API |
 
-- Reads your monitor’s current resolution and refresh rate.
-- Subtracts your margin values to compute a new width/height.
-- Enables custom resolutions on NVIDIA GPUs (`CDS_ENABLE_UNSAFE_MODES`).
-- Saves the mode in the display driver registry so it survives reboots.
+If edges look stretched, set GPU scaling to **center / 1:1** in your graphics control panel.
 
-This is the same class of change as **NVIDIA Control Panel → Adjust desktop size** (which creates resolutions like 1842×1030), but Borderline exposes **per-edge pixel control** in one simple window.
+## Auto-update
 
-### GPU scaling note
+On launch, Borderline checks:
 
-If margins look stretched instead of letterboxed, set your GPU scaling to **center / no scaling / 1:1** in NVIDIA Control Panel, Intel Graphics Command Center, or AMD Software. Borderline sets the mode; the GPU decides how unused panel area is handled (typically blank).
+`https://github.com/ashdkts/borderline/releases/latest/download/latest.json`
 
-### Limitations (v1)
-
-| Feature | Status |
-|---------|--------|
-| Per-edge pixel margins | Supported via custom resolution |
-| Blank unused panel area | Yes — driver/GPU, not an overlay |
-| Rounded corners | Not at driver level (rectangular crop only) |
-| AMD ADL / Intel IGCL direct APIs | Planned — v1 uses Windows display API |
-| Multi-monitor per-display pick | Primary desktop display only |
+If a newer version exists, it downloads the exe (SHA-256 verified), replaces itself, and restarts. Status appears in the window footer.
 
 ## Publish a release
 
 ```bash
-chmod +x scripts/*.sh
-./scripts/build.sh
-./scripts/publish-github.sh
+./scripts/build.sh 1.0.2
+git tag v1.0.2
+git push origin main --tags
 ```
-
-Or push a tag to trigger CI:
-
-```bash
-git tag v1.0.1
-git push origin v1.0.1
-```
-
-## Local build
-
-```bash
-./scripts/build.sh
-# Output: dist/borderline.exe
-```
-
-## Project layout
-
-| Path | Description |
-|------|-------------|
-| `borderline-app/` | Go Win32 GUI + `ChangeDisplaySettingsEx` driver logic |
-| `scripts/build.sh` | Cross-compile Windows exe |
-| `.github/workflows/release.yml` | GitHub Actions release |
 
 ## License
 
