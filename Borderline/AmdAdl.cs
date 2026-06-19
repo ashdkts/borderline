@@ -3,32 +3,14 @@ using System.Runtime.InteropServices;
 namespace Borderline;
 
 /// <summary>
-/// AMD ADL2 — ModeTimingOverride for driver-level display margins on Radeon GPUs.
+/// AMD ADL2 ModeTimingOverride — driver-level overscan margins on Radeon GPUs.
 /// </summary>
 internal static class AmdAdl
 {
     private const int AdlOk = 0;
-    private const int AdlMaxPath = 256;
     private const int AdlDlModetimingStandardCustom = 0x08;
     private const int AdlDlModetimingStandardDriverDefault = 0x10;
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate IntPtr AdlMalloc(int size);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2MainControlCreate(AdlMalloc callback, int enumerateConnected, out IntPtr context);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2MainControlDestroy(IntPtr context);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2AdapterNumberOfAdaptersGet(IntPtr context, ref int num);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2AdapterAdapterInfoGet(IntPtr context, IntPtr info, int size);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2DisplayDisplayInfoGet(IntPtr context, int adapter, ref int numDisplays, ref IntPtr displayInfo, int forceRefresh);
+    private const int AdlDlTimingFlagReducedBlanking = 0x0010;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Adl2DisplayModeTimingOverrideGet(
@@ -37,60 +19,6 @@ internal static class AmdAdl
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     private delegate int Adl2DisplayModeTimingOverrideSet(
         IntPtr context, int adapter, int display, ref AdlDisplayModeInfo mode, int forceUpdate);
-
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2FlushDriverData(IntPtr context, int adapter);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private struct AdapterInfo
-    {
-        public int iSize;
-        public int iAdapterIndex;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strUDID;
-        public int iBusNumber;
-        public int iDeviceNumber;
-        public int iFunctionNumber;
-        public int iVendorID;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strAdapterName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strDisplayName;
-        public int iPresent;
-        public int iExist;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strDriverPath;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strDriverPathExt;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strPNPString;
-        public int iOSDisplayIndex;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct AdlDisplayId
-    {
-        public int iDisplayLogicalIndex;
-        public int iDisplayPhysicalIndex;
-        public int iDisplayLogicalAdapterIndex;
-        public int iDisplayPhysicalAdapterIndex;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    private struct AdlDisplayInfo
-    {
-        public AdlDisplayId displayID;
-        public int iDisplayControllerIndex;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strDisplayName;
-        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = AdlMaxPath)]
-        public string strDisplayManufacturerName;
-        public int iDisplayType;
-        public int iDisplayOutputType;
-        public int iDisplayConnector;
-        public int iDisplayInfoMask;
-        public int iDisplayInfoValue;
-    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct AdlDisplayMode
@@ -134,25 +62,8 @@ internal static class AmdAdl
         public AdlDetailedTiming sDetailedTiming;
     }
 
-    private static readonly AdlMalloc MallocCallback = size =>
-    {
-        if (size <= 0)
-        {
-            return IntPtr.Zero;
-        }
-
-        return Marshal.AllocHGlobal(size);
-    };
-
-    private static IntPtr _context;
-    private static IntPtr _dll;
-    private static Adl2MainControlDestroy? _destroy;
     private static Adl2DisplayModeTimingOverrideGet? _getOverride;
     private static Adl2DisplayModeTimingOverrideSet? _setOverride;
-    private static Adl2FlushDriverData? _flush;
-
-    private static int _adapter = -1;
-    private static int _display = -1;
     private static AdlDisplayModeInfo? _backup;
     private static bool _hasBackup;
 
@@ -161,8 +72,12 @@ internal static class AmdAdl
         message = null;
         try
         {
-            EnsureLoaded();
-            FindPrimaryDisplay();
+            _ = AmdAdlCore.Context;
+            var target = AmdAdlCore.Target;
+            TryEnableGpuScaling(target.Adapter);
+
+            _getOverride ??= AmdAdlCore.GetDelegate<Adl2DisplayModeTimingOverrideGet>("ADL2_Display_ModeTimingOverride_Get");
+            _setOverride ??= AmdAdlCore.GetDelegate<Adl2DisplayModeTimingOverrideSet>("ADL2_Display_ModeTimingOverride_Set");
 
             if (!NativeDisplay.TryGetResolution(out var w, out var h))
             {
@@ -180,11 +95,10 @@ internal static class AmdAdl
             };
 
             var modeOut = new AdlDisplayModeInfo();
-            var getResult = _getOverride!(_context, _adapter, _display, ref modeIn, ref modeOut);
-            if (getResult != AdlOk)
+            var getResult = _getOverride(AmdAdlCore.Context, target.Adapter, target.Display, ref modeIn, ref modeOut);
+            if (getResult != AdlOk || !HasValidTiming(modeOut.sDetailedTiming))
             {
-                // Build from current resolution if driver has no override yet.
-                modeOut = BuildDefaultModeInfo(w, h, hz);
+                modeOut = BuildCvtModeInfo(w, h, hz);
             }
 
             if (!_hasBackup)
@@ -193,42 +107,42 @@ internal static class AmdAdl
                 _hasBackup = true;
             }
 
-            var newW = w - left - right;
-            var newH = h - top - bottom;
-            if (newW < 320 || newH < 240)
+            if (left + right >= w || top + bottom >= h)
             {
                 return "margins too large";
             }
 
             modeOut.iTimingStandard = AdlDlModetimingStandardCustom;
-            modeOut.iPelsWidth = newW;
-            modeOut.iPelsHeight = newH;
+            modeOut.iPelsWidth = w;
+            modeOut.iPelsHeight = h;
             modeOut.iRefreshRate = hz;
 
             var dt = modeOut.sDetailedTiming;
-            if (dt.sHTotal <= 0)
+            if (!HasValidTiming(dt))
             {
-                dt = BuildDefaultModeInfo(w, h, hz).sDetailedTiming;
+                dt = BuildCvtModeInfo(w, h, hz).sDetailedTiming;
             }
 
             dt.iSize = Marshal.SizeOf<AdlDetailedTiming>();
-            dt.sHDisplay = (short)Math.Max(1, dt.sHDisplay - left - right);
-            dt.sVDisplay = (short)Math.Max(1, dt.sVDisplay - top - bottom);
+            dt.sHDisplay = (short)w;
+            dt.sVDisplay = (short)h;
             dt.sHOverscanLeft = (short)left;
             dt.sHOverscanRight = (short)right;
             dt.sVOverscanTop = (short)top;
             dt.sVOverscanBottom = (short)bottom;
             modeOut.sDetailedTiming = dt;
 
-            if (_setOverride!(_context, _adapter, _display, ref modeOut, 1) != AdlOk)
+            var setResult = _setOverride(AmdAdlCore.Context, target.Adapter, target.Display, ref modeOut, 1);
+            if (setResult != AdlOk)
             {
-                return "AMD rejected timing override";
+                return $"timing override rejected ({AmdAdlCore.FormatAdlError(setResult)}, adapter {target.Adapter}, display {target.Display})";
             }
 
-            _flush!(_context, _adapter);
+            AmdAdlCore.Flush(AmdAdlCore.Context, target.Adapter);
             NativeDisplay.RefreshDisplay();
 
-            message = $"AMD timing override {newW}x{newH} with {left}/{right}/{top}/{bottom}px margins.";
+            message =
+                $"AMD timing overscan {left}/{right}/{top}/{bottom}px on {w}x{h} (adapter {target.Adapter}, display {target.Display}).";
             return null;
         }
         catch (Exception ex)
@@ -239,18 +153,19 @@ internal static class AmdAdl
 
     public static bool Restore()
     {
-        if (!_hasBackup || _adapter < 0)
+        if (!_hasBackup)
         {
             return false;
         }
 
         try
         {
-            EnsureLoaded();
+            var target = AmdAdlCore.Target;
+            _setOverride ??= AmdAdlCore.GetDelegate<Adl2DisplayModeTimingOverrideSet>("ADL2_Display_ModeTimingOverride_Set");
             var restore = _backup!.Value;
             restore.iTimingStandard = AdlDlModetimingStandardDriverDefault;
-            _setOverride!(_context, _adapter, _display, ref restore, 1);
-            _flush!(_context, _adapter);
+            _setOverride(AmdAdlCore.Context, target.Adapter, target.Display, ref restore, 1);
+            AmdAdlCore.Flush(AmdAdlCore.Context, target.Adapter);
             NativeDisplay.RefreshDisplay();
             _hasBackup = false;
             return true;
@@ -261,131 +176,54 @@ internal static class AmdAdl
         }
     }
 
-    private static AdlDisplayModeInfo BuildDefaultModeInfo(int w, int h, int hz)
+    private static void TryEnableGpuScaling(int adapter)
+    {
+        var gpuScaling = AmdAdlCore.TryGetDelegate<Adl2DfpGpuScalingEnableSet>("ADL2_DFP_GPUScalingEnable_Set");
+        gpuScaling?.Invoke(AmdAdlCore.Context, adapter, 1);
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int enabled);
+
+    private static bool HasValidTiming(AdlDetailedTiming dt) =>
+        dt.sHTotal > 0 && dt.sVTotal > 0 && dt.sPixelClock > 0;
+
+    private static AdlDisplayModeInfo BuildCvtModeInfo(int width, int height, int refreshHz)
     {
         return new AdlDisplayModeInfo
         {
             iTimingStandard = AdlDlModetimingStandardCustom,
-            iRefreshRate = hz,
-            iPelsWidth = w,
-            iPelsHeight = h,
-            sDetailedTiming = new AdlDetailedTiming
-            {
-                iSize = Marshal.SizeOf<AdlDetailedTiming>(),
-                sHTotal = (short)w,
-                sHDisplay = (short)w,
-                sHSyncStart = (short)(w + 8),
-                sHSyncWidth = 32,
-                sVTotal = (short)h,
-                sVDisplay = (short)h,
-                sVSyncStart = (short)(h + 3),
-                sVSyncWidth = 5,
-                sPixelClock = 0,
-            },
+            iRefreshRate = refreshHz,
+            iPelsWidth = width,
+            iPelsHeight = height,
+            sDetailedTiming = BuildCvtReducedBlanking(width, height, refreshHz),
         };
     }
 
-    private static void EnsureLoaded()
+    /// <summary>CVT reduced-blanking timings (same approach as switchres / CRU).</summary>
+    private static AdlDetailedTiming BuildCvtReducedBlanking(int width, int height, int refreshHz)
     {
-        if (_context != IntPtr.Zero)
+        var hBlank = 160;
+        var hTotal = width + hBlank;
+        var vSync = height <= 1024 ? 3 : height <= 2048 ? 6 : 9;
+        var vBlank = Math.Max(460 / hTotal + 1, 3 + vSync);
+        var vTotal = height + vBlank;
+        var pixelClockKhz = (long)hTotal * vTotal * refreshHz / 1000;
+        var pixelClock10Khz = (ushort)Math.Clamp(pixelClockKhz / 10, 1, ushort.MaxValue);
+
+        return new AdlDetailedTiming
         {
-            return;
-        }
-
-        try
-        {
-            _dll = NativeLibrary.Load("atiadlxx.dll");
-        }
-        catch (DllNotFoundException)
-        {
-            _dll = NativeLibrary.Load("atiadlxy.dll");
-        }
-
-        var create = GetDelegate<Adl2MainControlCreate>("ADL2_Main_Control_Create");
-        _destroy = GetDelegate<Adl2MainControlDestroy>("ADL2_Main_Control_Destroy");
-        _getOverride = GetDelegate<Adl2DisplayModeTimingOverrideGet>("ADL2_Display_ModeTimingOverride_Get");
-        _setOverride = GetDelegate<Adl2DisplayModeTimingOverrideSet>("ADL2_Display_ModeTimingOverride_Set");
-        _flush = GetDelegate<Adl2FlushDriverData>("ADL2_Flush_Driver_Data");
-
-        if (create(MallocCallback, 1, out _context) != AdlOk)
-        {
-            throw new InvalidOperationException("ADL2 init failed");
-        }
-    }
-
-    private static T GetDelegate<T>(string name) where T : Delegate
-    {
-        if (!NativeLibrary.TryGetExport(_dll, name, out var proc))
-        {
-            throw new InvalidOperationException($"ADL export missing: {name}");
-        }
-
-        return Marshal.GetDelegateForFunctionPointer<T>(proc);
-    }
-
-    private static void FindPrimaryDisplay()
-    {
-        if (_adapter >= 0)
-        {
-            return;
-        }
-
-        var numAdaptersGet = GetDelegate<Adl2AdapterNumberOfAdaptersGet>("ADL2_Adapter_NumberOfAdapters_Get");
-        var adapterInfoGet = GetDelegate<Adl2AdapterAdapterInfoGet>("ADL2_Adapter_AdapterInfo_Get");
-        var displayInfoGet = GetDelegate<Adl2DisplayDisplayInfoGet>("ADL2_Display_DisplayInfo_Get");
-
-        var numAdapters = 0;
-        if (numAdaptersGet(_context, ref numAdapters) != AdlOk || numAdapters <= 0)
-        {
-            throw new InvalidOperationException("No AMD adapters");
-        }
-
-        var infoSize = Marshal.SizeOf<AdapterInfo>();
-        var adapterBuffer = Marshal.AllocHGlobal(infoSize * numAdapters);
-        try
-        {
-            for (var i = 0; i < numAdapters; i++)
-            {
-                var ptr = adapterBuffer + (i * infoSize);
-                Marshal.WriteInt32(ptr, infoSize);
-            }
-
-            if (adapterInfoGet(_context, adapterBuffer, infoSize * numAdapters) != AdlOk)
-            {
-                throw new InvalidOperationException("Adapter info failed");
-            }
-
-            for (var i = 0; i < numAdapters; i++)
-            {
-                var adapter = Marshal.PtrToStructure<AdapterInfo>(adapterBuffer + (i * infoSize));
-                if (adapter.iPresent == 0)
-                {
-                    continue;
-                }
-
-                var numDisplays = 0;
-                IntPtr displayList = IntPtr.Zero;
-                if (displayInfoGet(_context, adapter.iAdapterIndex, ref numDisplays, ref displayList, 1) != AdlOk ||
-                    numDisplays <= 0 || displayList == IntPtr.Zero)
-                {
-                    continue;
-                }
-
-                var displaySize = Marshal.SizeOf<AdlDisplayInfo>();
-                for (var d = 0; d < numDisplays; d++)
-                {
-                    var info = Marshal.PtrToStructure<AdlDisplayInfo>(displayList + (d * displaySize));
-                    _adapter = adapter.iAdapterIndex;
-                    _display = info.displayID.iDisplayLogicalIndex;
-                    return;
-                }
-            }
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(adapterBuffer);
-        }
-
-        throw new InvalidOperationException("No AMD display found");
+            iSize = Marshal.SizeOf<AdlDetailedTiming>(),
+            sTimingFlags = (short)AdlDlTimingFlagReducedBlanking,
+            sHTotal = (short)hTotal,
+            sHDisplay = (short)width,
+            sHSyncStart = (short)(width + 48),
+            sHSyncWidth = 32,
+            sVTotal = (short)vTotal,
+            sVDisplay = (short)height,
+            sVSyncStart = (short)(height + vBlank - 6),
+            sVSyncWidth = (short)vSync,
+            sPixelClock = pixelClock10Khz,
+        };
     }
 }

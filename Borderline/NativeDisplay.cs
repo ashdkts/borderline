@@ -224,6 +224,7 @@ internal static class NativeDisplay
     }
 
     private const int DISPLAY_DEVICE_ATTACHED_TO_DESKTOP = 0x1;
+    private const int DISPLAY_DEVICE_PRIMARY_DEVICE = 0x4;
 
     private static bool EnumDisplayDevices(int index, out string deviceName, out string deviceString)
     {
@@ -288,6 +289,30 @@ internal static class NativeDisplay
 
         hz = mode.dmDisplayFrequency > 0 ? mode.dmDisplayFrequency : 60;
         return true;
+    }
+
+    public static string GetPrimaryDeviceName()
+    {
+        for (var i = 0; ; i++)
+        {
+            var dd = new DISPLAY_DEVICE { cb = Marshal.SizeOf<DISPLAY_DEVICE>() };
+            if (!NativeEnumDisplayDevices(null, (uint)i, ref dd, 0))
+            {
+                break;
+            }
+
+            if ((dd.StateFlags & DISPLAY_DEVICE_PRIMARY_DEVICE) != 0)
+            {
+                return dd.DeviceName;
+            }
+        }
+
+        for (var i = 0; EnumDisplayDevices(i, out var name, out _); i++)
+        {
+            return name;
+        }
+
+        return string.Empty;
     }
 
     public static void RefreshDisplay()

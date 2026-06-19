@@ -3,8 +3,9 @@ namespace Borderline;
 internal enum ApplyMethod
 {
     None,
-    AmdTiming,
+    AmdSize,
     AmdUnderscan,
+    AmdTiming,
     Win32Custom,
 }
 
@@ -16,7 +17,7 @@ internal static class DisplayService
     {
         return NativeDisplay.DetectVendor() switch
         {
-            GpuVendor.Amd => "GPU: AMD Radeon (ADL timing override)",
+            GpuVendor.Amd => "GPU: AMD Radeon (ADL display size / underscan)",
             GpuVendor.Nvidia => "GPU: NVIDIA (custom resolution)",
             GpuVendor.Intel => "GPU: Intel (custom resolution)",
             _ => "GPU: generic (custom resolution)",
@@ -32,19 +33,37 @@ internal static class DisplayService
 
         if (NativeDisplay.DetectVendor() == GpuVendor.Amd)
         {
-            var err = AmdAdl.TryApplyMargins(settings.Top, settings.Bottom, settings.Left, settings.Right, out var msg);
-            if (err is null)
+            var errors = new List<string>();
+
+            var sizeErr = AmdAdlCore.TryApplySizeAndPosition(
+                settings.Top, settings.Bottom, settings.Left, settings.Right, out var sizeMsg);
+            if (sizeErr is null)
             {
-                _lastMethod = ApplyMethod.AmdTiming;
-                return msg!;
+                _lastMethod = ApplyMethod.AmdSize;
+                return sizeMsg!;
             }
 
-            var underErr = AmdDisplay.TryApply(settings.Top, settings.Bottom, settings.Left, settings.Right, out var underMsg);
+            errors.Add($"Size: {sizeErr}");
+
+            var underErr = AmdAdlCore.TryApplyUnderscan(
+                settings.Top, settings.Bottom, settings.Left, settings.Right, out var underMsg);
             if (underErr is null)
             {
                 _lastMethod = ApplyMethod.AmdUnderscan;
                 return underMsg!;
             }
+
+            errors.Add($"Underscan: {underErr}");
+
+            var timingErr = AmdAdl.TryApplyMargins(
+                settings.Top, settings.Bottom, settings.Left, settings.Right, out var timingMsg);
+            if (timingErr is null)
+            {
+                _lastMethod = ApplyMethod.AmdTiming;
+                return timingMsg!;
+            }
+
+            errors.Add($"Timing: {timingErr}");
 
             try
             {
@@ -56,7 +75,7 @@ internal static class DisplayService
             catch (Exception ex)
             {
                 throw new InvalidOperationException(
-                    $"All AMD methods failed. Timing: {err}. Underscan: {underErr}. Windows: {ex.Message}", ex);
+                    $"All AMD methods failed. {string.Join(" ", errors)} Windows: {ex.Message}", ex);
             }
         }
 
@@ -69,18 +88,25 @@ internal static class DisplayService
     {
         switch (_lastMethod)
         {
+            case ApplyMethod.AmdSize:
+                if (AmdAdlCore.RestoreSizeAndPosition())
+                {
+                    _lastMethod = ApplyMethod.None;
+                    return "AMD display size restored.";
+                }
+                break;
+            case ApplyMethod.AmdUnderscan:
+                if (AmdAdlCore.RestoreUnderscan())
+                {
+                    _lastMethod = ApplyMethod.None;
+                    return "AMD underscan restored.";
+                }
+                break;
             case ApplyMethod.AmdTiming:
                 if (AmdAdl.Restore())
                 {
                     _lastMethod = ApplyMethod.None;
                     return "AMD timing override restored.";
-                }
-                break;
-            case ApplyMethod.AmdUnderscan:
-                if (AmdDisplay.Restore())
-                {
-                    _lastMethod = ApplyMethod.None;
-                    return "AMD underscan restored.";
                 }
                 break;
         }
