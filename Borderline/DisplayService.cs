@@ -1,28 +1,29 @@
 namespace Borderline;
 
-internal enum ApplyMethod
-{
-    None,
-    AmdSize,
-    AmdUnderscan,
-    AmdDalRegistry,
-    AmdTiming,
-    Win32Custom,
-}
-
 internal static class DisplayService
 {
     private static ApplyMethod _lastMethod;
 
     public static string GpuLabel()
     {
-        return NativeDisplay.DetectVendor() switch
+        if (NativeDisplay.DetectVendor() != GpuVendor.Amd)
         {
-            GpuVendor.Amd => "GPU: AMD Radeon (ADL display size / underscan)",
-            GpuVendor.Nvidia => "GPU: NVIDIA (custom resolution)",
-            GpuVendor.Intel => "GPU: Intel (custom resolution)",
-            _ => "GPU: generic (custom resolution)",
-        };
+            return NativeDisplay.DetectVendor() switch
+            {
+                GpuVendor.Nvidia => "GPU: NVIDIA (custom resolution)",
+                GpuVendor.Intel => "GPU: Intel (custom resolution)",
+                _ => "GPU: generic (custom resolution)",
+            };
+        }
+
+        try
+        {
+            return AmdAdlCore.GetCapabilitySummary();
+        }
+        catch (Exception ex)
+        {
+            return $"GPU: AMD Radeon ({ex.Message})";
+        }
     }
 
     public static string Apply(AppSettings settings)
@@ -34,100 +35,27 @@ internal static class DisplayService
 
         if (NativeDisplay.DetectVendor() == GpuVendor.Amd)
         {
-            AmdAdlCore.PrepareForMargins();
-            var errors = new List<string>();
-
-            var sizeErr = AmdAdlCore.TryApplySizeAndPosition(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, out var sizeMsg);
-            if (sizeErr is null)
-            {
-                _lastMethod = ApplyMethod.AmdSize;
-                return sizeMsg!;
-            }
-
-            errors.Add($"Size: {sizeErr}");
-
-            var underErr = AmdAdlCore.TryApplyUnderscan(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, out var underMsg);
-            if (underErr is null)
-            {
-                _lastMethod = ApplyMethod.AmdUnderscan;
-                return underMsg!;
-            }
-
-            errors.Add($"Underscan: {underErr}");
-
-            var dalErr = AmdDalRegistry.TryApply(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, out var dalMsg);
-            if (dalErr is null)
-            {
-                _lastMethod = ApplyMethod.AmdDalRegistry;
-                return dalMsg!;
-            }
-
-            errors.Add($"Registry: {dalErr}");
-
-            var timingErr = AmdAdl.TryApplyMargins(
-                settings.Top, settings.Bottom, settings.Left, settings.Right, out var timingMsg);
-            if (timingErr is null)
-            {
-                _lastMethod = ApplyMethod.AmdTiming;
-                return timingMsg!;
-            }
-
-            errors.Add($"Timing: {timingErr}");
-
-            try
-            {
-                var custom = NativeDisplay.ApplyCustomMode(
-                    settings.Top, settings.Bottom, settings.Left, settings.Right, enableUnsafeModes: true);
-                _lastMethod = ApplyMethod.Win32Custom;
-                return custom;
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException(
-                    $"All AMD methods failed. {string.Join(" ", errors)} Windows: {ex.Message}", ex);
-            }
+            return AmdApply.Apply(settings, out _lastMethod);
         }
 
-        var nvidia = NativeDisplay.DetectVendor() == GpuVendor.Nvidia;
         _lastMethod = ApplyMethod.Win32Custom;
-        return NativeDisplay.ApplyCustomMode(settings.Top, settings.Bottom, settings.Left, settings.Right, nvidia);
+        return NativeDisplay.ApplyCustomMode(
+            settings.Top, settings.Bottom, settings.Left, settings.Right,
+            NativeDisplay.DetectVendor() == GpuVendor.Nvidia);
     }
 
     public static string Restore()
     {
-        switch (_lastMethod)
+        if (_lastMethod is ApplyMethod.Win32Custom or ApplyMethod.None)
         {
-            case ApplyMethod.AmdSize:
-                if (AmdAdlCore.RestoreSizeAndPosition())
-                {
-                    _lastMethod = ApplyMethod.None;
-                    return "AMD display size restored.";
-                }
-                break;
-            case ApplyMethod.AmdUnderscan:
-                if (AmdAdlCore.RestoreUnderscan())
-                {
-                    _lastMethod = ApplyMethod.None;
-                    return "AMD underscan restored.";
-                }
-                break;
-            case ApplyMethod.AmdDalRegistry:
-                if (AmdDalRegistry.Restore())
-                {
-                    _lastMethod = ApplyMethod.None;
-                    return "AMD registry underscan restored.";
-                }
-                break;
-            case ApplyMethod.AmdTiming:
-                if (AmdAdl.Restore())
-                {
-                    _lastMethod = ApplyMethod.None;
-                    return "AMD timing override restored.";
-                }
-                break;
+            _lastMethod = ApplyMethod.None;
+            return NativeDisplay.Restore();
+        }
+
+        if (AmdApply.Restore(_lastMethod))
+        {
+            _lastMethod = ApplyMethod.None;
+            return "AMD display settings restored.";
         }
 
         _lastMethod = ApplyMethod.None;

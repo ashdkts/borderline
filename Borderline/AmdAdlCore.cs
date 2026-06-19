@@ -78,7 +78,42 @@ internal static class AmdAdlCore
     private delegate int Adl2DisplayUnderscanSet(IntPtr context, int adapter, int display, int current);
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int enabled);
+    private delegate int Adl2DfpGpuScalingEnableSet(IntPtr context, int adapter, int display, int enabled);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DisplayViewPortCap(IntPtr context, int adapter, ref int supported);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DisplayViewPortGet(IntPtr context, int adapter, int display, ref AdlControllerMode mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DisplayViewPortSet(IntPtr context, int adapter, int display, ref AdlControllerMode mode);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DisplayOverscanGet(
+        IntPtr context, int adapter, int display,
+        ref int current, ref int defaultVal, ref int min, ref int max, ref int step);
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate int Adl2DisplayOverscanSet(IntPtr context, int adapter, int display, int current);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct AdlControllerMode
+    {
+        public int iModifiers;
+        public int iViewPositionCx;
+        public int iViewPositionCy;
+        public int iViewPanLockLeft;
+        public int iViewPanLockRight;
+        public int iViewPanLockTop;
+        public int iViewPanLockBottom;
+        public int iViewResolutionCx;
+        public int iViewResolutionCy;
+    }
+
+    private const int ModifierViewPosition = 0x01;
+    private const int ModifierViewPanLock = 0x02;
+    private const int ModifierViewSize = 0x08;
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     internal delegate int Adl2FlushDriverData(IntPtr context, int adapter);
@@ -134,7 +169,12 @@ internal static class AmdAdlCore
         public int iDisplayInfoValue;
     }
 
-    internal readonly record struct TargetDisplay(int Adapter, int Display, string AdapterDeviceName);
+    internal readonly record struct TargetDisplay(
+        int Adapter,
+        int Display,
+        int PhysicalDisplay,
+        string AdapterDeviceName,
+        string MonitorName = "");
 
     private static readonly AdlMalloc MallocCallback = size =>
     {
@@ -156,8 +196,12 @@ internal static class AmdAdlCore
     private static int _backupPosX;
     private static int _backupPosY;
     private static int _backupUnderscan;
+    private static int _backupOverscan;
+    private static AdlControllerMode? _viewPortBackup;
     private static bool _hasSizeBackup;
     private static bool _hasUnderscanBackup;
+    private static bool _hasOverscanBackup;
+    private static bool _hasViewPortBackup;
 
     internal static IntPtr Context
     {
@@ -204,7 +248,8 @@ internal static class AmdAdlCore
         try
         {
             EnsureLoadedDelegates();
-            _gpuScalingSet?.Invoke(Context, Target.Adapter, 1);
+            var target = Target;
+            _gpuScalingSet?.Invoke(Context, target.Adapter, target.Display, 1);
             _gpuScalingPrepared = true;
         }
         catch
@@ -409,15 +454,18 @@ internal static class AmdAdlCore
             string? lastErr = null;
             foreach (var candidate in EnumerateTargets())
             {
-                lastErr = TryApplyUnderscanOnTarget(candidate, top, bottom, left, right, out message);
-                if (lastErr is null)
+                foreach (var displayIndex in DisplayIndices(candidate))
                 {
-                    _target = candidate;
-                    return null;
+                    lastErr = TryApplyUnderscanOnDisplay(candidate, displayIndex, top, bottom, left, right, out message);
+                    if (lastErr is null)
+                    {
+                        _target = candidate with { Display = displayIndex };
+                        return null;
+                    }
                 }
             }
 
-            return lastErr ?? "no AMD displays found";
+            return lastErr ?? "underscan not supported";
         }
         catch (Exception ex)
         {
@@ -425,8 +473,9 @@ internal static class AmdAdlCore
         }
     }
 
-    private static string? TryApplyUnderscanOnTarget(
-        TargetDisplay target, int top, int bottom, int left, int right, out string? message)
+    private static string? TryApplyUnderscanOnDisplay(
+        TargetDisplay target, int displayIndex,
+        int top, int bottom, int left, int right, out string? message)
     {
         message = null;
         try
@@ -435,11 +484,12 @@ internal static class AmdAdlCore
             var stateSet = GetDelegate<Adl2DisplayUnderscanStateSet>("ADL2_Display_UnderscanState_Set");
             var underGet = GetDelegate<Adl2DisplayUnderscanGet>("ADL2_Display_Underscan_Get");
             var underSet = GetDelegate<Adl2DisplayUnderscanSet>("ADL2_Display_Underscan_Set");
+            _gpuScalingSet?.Invoke(Context, target.Adapter, displayIndex, 1);
 
             var support = 0;
-            if (supportGet(Context, target.Adapter, target.Display, ref support) != AdlOk || support == 0)
+            if (supportGet(Context, target.Adapter, displayIndex, ref support) != AdlOk || support == 0)
             {
-                return "underscan not supported on this display";
+                return $"underscan not supported on display {displayIndex}";
             }
 
             var current = 0;
@@ -447,9 +497,9 @@ internal static class AmdAdlCore
             var min = 0;
             var max = 0;
             var step = 1;
-            if (underGet(Context, target.Adapter, target.Display, ref current, ref defaultVal, ref min, ref max, ref step) != AdlOk)
+            if (underGet(Context, target.Adapter, displayIndex, ref current, ref defaultVal, ref min, ref max, ref step) != AdlOk)
             {
-                return "underscan get failed";
+                return $"underscan get failed on display {displayIndex}";
             }
 
             if (!_hasUnderscanBackup)
@@ -473,12 +523,12 @@ internal static class AmdAdlCore
                 return $"underscan already at {current}% (range {min}-{max}, step {step})";
             }
 
-            if (stateSet(Context, target.Adapter, target.Display, 1) != AdlOk)
+            if (stateSet(Context, target.Adapter, displayIndex, 1) != AdlOk)
             {
                 return "could not enable underscan";
             }
 
-            var setResult = underSet(Context, target.Adapter, target.Display, targetValue);
+            var setResult = underSet(Context, target.Adapter, displayIndex, targetValue);
             if (setResult != AdlOk)
             {
                 return $"underscan set failed ({FormatAdlError(setResult)}, range {min}-{max}, step {step})";
@@ -491,15 +541,15 @@ internal static class AmdAdlCore
             var verifyMin = 0;
             var verifyMax = 0;
             var verifyStep = 0;
-            underGet(Context, target.Adapter, target.Display, ref verify, ref verifyDef, ref verifyMin, ref verifyMax, ref verifyStep);
-            if (verify == current)
+            underGet(Context, target.Adapter, displayIndex, ref verify, ref verifyDef, ref verifyMin, ref verifyMax, ref verifyStep);
+            if (verify == current && targetValue != current)
             {
-                underSet(Context, target.Adapter, target.Display, current);
-                return $"driver ignored underscan (still {current}%, wanted {targetValue}%, range {min}-{max})";
+                underSet(Context, target.Adapter, displayIndex, current);
+                return $"driver ignored underscan on display {displayIndex}";
             }
 
             message =
-                $"AMD underscan {current}% -> {verify}% (adapter {target.Adapter}, display {target.Display}, range {min}-{max}).";
+                $"AMD underscan {current}% -> {verify}% (adapter {target.Adapter}, display {displayIndex}, range {min}-{max}).";
             return null;
         }
         catch (Exception ex)
@@ -628,6 +678,283 @@ internal static class AmdAdlCore
         return (_flush, _gpuScalingSet);
     }
 
+    public static string GetCapabilitySummary()
+    {
+        try
+        {
+            EnsureLoaded();
+            var target = Target;
+            var viewportCap = GetDelegate<Adl2DisplayViewPortCap>("ADL2_Display_ViewPort_Cap");
+            var capsGet = GetDelegate<Adl2DisplayAdjustCapsGet>("ADL2_Display_AdjustCaps_Get");
+            var underSupport = GetDelegate<Adl2DisplayUnderscanSupportGet>("ADL2_Display_UnderscanSupport_Get");
+
+            var viewportSupported = 0;
+            viewportCap(Context, target.Adapter, ref viewportSupported);
+
+            var caps = 0;
+            capsGet(Context, target.Adapter, target.Display, ref caps);
+
+            var under = 0;
+            underSupport(Context, target.Adapter, target.Display, ref under);
+
+            NativeDisplay.TryGetResolution(out var w, out var h);
+
+            return
+                $"GPU: AMD Radeon | {w}x{h} | adapter {target.Adapter} display {target.Display} " +
+                $"(phys {target.PhysicalDisplay}) | viewport={(viewportSupported != 0 ? "yes" : "no")} " +
+                $"underscan={(under != 0 ? "yes" : "no")} sizeCaps=0x{caps:X}";
+        }
+        catch (Exception ex)
+        {
+            return $"GPU: AMD Radeon ({ex.Message})";
+        }
+    }
+
+    public static string? TryApplyViewPort(int top, int bottom, int left, int right, out string? message)
+    {
+        message = null;
+        try
+        {
+            EnsureLoaded();
+            if (!NativeDisplay.TryGetResolution(out var w, out var h))
+            {
+                return "could not read resolution";
+            }
+
+            var viewW = w - left - right;
+            var viewH = h - top - bottom;
+            if (viewW < 320 || viewH < 240)
+            {
+                return "margins too large";
+            }
+
+            string? lastErr = null;
+            foreach (var target in EnumerateTargets())
+            {
+                foreach (var displayIndex in DisplayIndices(target))
+                {
+                    lastErr = TryApplyViewPortOnDisplay(target, displayIndex, top, bottom, left, right, w, h, out message);
+                    if (lastErr is null)
+                    {
+                        _target = target with { Display = displayIndex };
+                        return null;
+                    }
+                }
+            }
+
+            return lastErr ?? "viewport not supported";
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    public static bool RestoreViewPort()
+    {
+        if (!_hasViewPortBackup || _target is null || _viewPortBackup is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var target = _target.Value;
+            var viewPortSet = GetDelegate<Adl2DisplayViewPortSet>("ADL2_Display_ViewPort_Set");
+            var restore = _viewPortBackup.Value;
+            viewPortSet(Context, target.Adapter, target.Display, ref restore);
+            Flush(Context, target.Adapter);
+            _hasViewPortBackup = false;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static string? TryApplyOverscan(int top, int bottom, int left, int right, out string? message)
+    {
+        message = null;
+        try
+        {
+            EnsureLoaded();
+            string? lastErr = null;
+            foreach (var target in EnumerateTargets())
+            {
+                foreach (var displayIndex in DisplayIndices(target))
+                {
+                    lastErr = TryApplyOverscanOnDisplay(target, displayIndex, top, bottom, left, right, out message);
+                    if (lastErr is null)
+                    {
+                        _target = target with { Display = displayIndex };
+                        return null;
+                    }
+                }
+            }
+
+            return lastErr ?? "overscan not supported";
+        }
+        catch (Exception ex)
+        {
+            return ex.Message;
+        }
+    }
+
+    public static bool RestoreOverscan()
+    {
+        if (!_hasOverscanBackup || _target is null)
+        {
+            return false;
+        }
+
+        try
+        {
+            var target = _target.Value;
+            var overSet = GetDelegate<Adl2DisplayOverscanSet>("ADL2_Display_Overscan_Set");
+            overSet(Context, target.Adapter, target.Display, _backupOverscan);
+            Flush(Context, target.Adapter);
+            _hasOverscanBackup = false;
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string? TryApplyViewPortOnDisplay(
+        TargetDisplay target, int displayIndex,
+        int top, int bottom, int left, int right,
+        int w, int h, out string? message)
+    {
+        message = null;
+        var viewPortCap = GetDelegate<Adl2DisplayViewPortCap>("ADL2_Display_ViewPort_Cap");
+        var supported = 0;
+        if (viewPortCap(Context, target.Adapter, ref supported) != AdlOk || supported == 0)
+        {
+            return "viewport not supported on adapter";
+        }
+
+        var viewPortGet = GetDelegate<Adl2DisplayViewPortGet>("ADL2_Display_ViewPort_Get");
+        var viewPortSet = GetDelegate<Adl2DisplayViewPortSet>("ADL2_Display_ViewPort_Set");
+        _gpuScalingSet?.Invoke(Context, target.Adapter, displayIndex, 1);
+
+        var mode = new AdlControllerMode();
+        if (viewPortGet(Context, target.Adapter, displayIndex, ref mode) != AdlOk)
+        {
+            return $"viewport get failed on display {displayIndex}";
+        }
+
+        if (!_hasViewPortBackup)
+        {
+            _viewPortBackup = mode;
+            _hasViewPortBackup = true;
+        }
+
+        var beforeW = mode.iViewResolutionCx;
+        var beforeH = mode.iViewResolutionCy;
+
+        mode.iModifiers = ModifierViewPosition | ModifierViewPanLock | ModifierViewSize;
+        mode.iViewResolutionCx = w - left - right;
+        mode.iViewResolutionCy = h - top - bottom;
+        mode.iViewPositionCx = left;
+        mode.iViewPositionCy = top;
+        mode.iViewPanLockLeft = left;
+        mode.iViewPanLockRight = right;
+        mode.iViewPanLockTop = top;
+        mode.iViewPanLockBottom = bottom;
+
+        if (viewPortSet(Context, target.Adapter, displayIndex, ref mode) != AdlOk)
+        {
+            return $"viewport set rejected on display {displayIndex}";
+        }
+
+        Flush(Context, target.Adapter);
+
+        var verify = new AdlControllerMode();
+        viewPortGet(Context, target.Adapter, displayIndex, ref verify);
+        if (verify.iViewResolutionCx == beforeW && verify.iViewResolutionCy == beforeH &&
+            (beforeW != mode.iViewResolutionCx || beforeH != mode.iViewResolutionCy))
+        {
+            var rollback = _viewPortBackup!.Value;
+            viewPortSet(Context, target.Adapter, displayIndex, ref rollback);
+            return $"driver ignored viewport on display {displayIndex}";
+        }
+
+        message =
+            $"AMD viewport {beforeW}x{beforeH} -> {verify.iViewResolutionCx}x{verify.iViewResolutionCy} " +
+            $"(adapter {target.Adapter}, display {displayIndex}, pos {left},{top}).";
+        return null;
+    }
+
+    private static string? TryApplyOverscanOnDisplay(
+        TargetDisplay target, int displayIndex,
+        int top, int bottom, int left, int right, out string? message)
+    {
+        message = null;
+        var overGet = GetDelegate<Adl2DisplayOverscanGet>("ADL2_Display_Overscan_Get");
+        var overSet = GetDelegate<Adl2DisplayOverscanSet>("ADL2_Display_Overscan_Set");
+
+        var current = 0;
+        var defaultVal = 0;
+        var min = 0;
+        var max = 0;
+        var step = 1;
+        if (overGet(Context, target.Adapter, displayIndex, ref current, ref defaultVal, ref min, ref max, ref step) != AdlOk)
+        {
+            return $"overscan get failed on display {displayIndex}";
+        }
+
+        if (!_hasOverscanBackup)
+        {
+            _backupOverscan = current;
+            _hasOverscanBackup = true;
+        }
+
+        if (!NativeDisplay.TryGetResolution(out var w, out var h))
+        {
+            return "could not read resolution";
+        }
+
+        var margin = Math.Max(Math.Max(top, bottom), Math.Max(left, right));
+        var dim = Math.Min(w, h);
+        var targetValue = dim <= 0 ? min : margin * 100 * 2 / dim;
+        targetValue = Snap(targetValue, min, max, step);
+
+        if (overSet(Context, target.Adapter, displayIndex, targetValue) != AdlOk)
+        {
+            return $"overscan set failed on display {displayIndex} (range {min}-{max})";
+        }
+
+        Flush(Context, target.Adapter);
+
+        var verify = 0;
+        var verifyDef = 0;
+        var verifyMin = 0;
+        var verifyMax = 0;
+        var verifyStep = 0;
+        overGet(Context, target.Adapter, displayIndex, ref verify, ref verifyDef, ref verifyMin, ref verifyMax, ref verifyStep);
+        if (verify == current && targetValue != current)
+        {
+            overSet(Context, target.Adapter, displayIndex, current);
+            return $"driver ignored overscan on display {displayIndex}";
+        }
+
+        message =
+            $"AMD overscan {current}% -> {verify}% (adapter {target.Adapter}, display {displayIndex}).";
+        return null;
+    }
+
+    private static IEnumerable<int> DisplayIndices(TargetDisplay target)
+    {
+        yield return target.Display;
+        if (target.PhysicalDisplay != target.Display)
+        {
+            yield return target.PhysicalDisplay;
+        }
+    }
+
     private static IEnumerable<TargetDisplay> EnumerateTargets()
     {
         EnsureLoaded();
@@ -688,7 +1015,9 @@ internal static class AmdAdlCore
                     var candidate = new TargetDisplay(
                         adapter.iAdapterIndex,
                         info.displayID.iDisplayLogicalIndex,
-                        adapter.strDisplayName);
+                        info.displayID.iDisplayPhysicalIndex,
+                        adapter.strDisplayName,
+                        info.strDisplayName);
 
                     if (!string.IsNullOrEmpty(primaryDevice) &&
                         string.Equals(adapter.strDisplayName, primaryDevice, StringComparison.OrdinalIgnoreCase))
@@ -776,7 +1105,9 @@ internal static class AmdAdlCore
                     var candidate = new TargetDisplay(
                         adapter.iAdapterIndex,
                         info.displayID.iDisplayLogicalIndex,
-                        adapter.strDisplayName);
+                        info.displayID.iDisplayPhysicalIndex,
+                        adapter.strDisplayName,
+                        info.strDisplayName);
 
                     fallback ??= candidate;
 

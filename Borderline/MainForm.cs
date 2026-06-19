@@ -14,7 +14,7 @@ internal sealed class MainForm : Form
     private readonly Button _applyBtn = new() { Text = "Apply", Left = 16, Top = 200, Width = 100, Height = 34 };
     private readonly Button _resetBtn = new() { Text = "Reset", Left = 126, Top = 200, Width = 100, Height = 34 };
     private readonly Button _enableBtn = new() { Text = "Enable margins", Left = 236, Top = 200, Width = 130, Height = 34 };
-    private readonly Label _statusLabel = new() { Left = 16, Top = 250, Width = 460, Height = 80 };
+    private readonly Label _statusLabel = new() { Left = 16, Top = 250, Width = 460, Height = 96 };
 
     private AppSettings _settings = AppSettings.Load();
     private bool _busy;
@@ -24,7 +24,7 @@ internal sealed class MainForm : Form
         var version = typeof(MainForm).Assembly.GetName().Version?.ToString(3) ?? "?";
         Text = $"Borderline v{version}";
         Font = new Font("Segoe UI", 10f);
-        ClientSize = new Size(500, 350);
+        ClientSize = new Size(500, 370);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
